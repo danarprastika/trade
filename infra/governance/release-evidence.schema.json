@@ -1,0 +1,330 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.trade.internal/release-evidence.schema.json",
+  "title": "Full-Scale Release Evidence Bundle",
+  "description": "Schema for the immutable release evidence package required by 25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md §8. A release candidate is eligible for production review ONLY when the bundle contains all ten items. 'Missing, stale, unverifiable, or contradictory evidence is a release failure. A waiver must be time-bounded, narrowly scoped, approved by the accountable risk owner and security owner, and cannot waive legal eligibility, adult account-holder requirements, audit integrity, risk authorization, or the ability to halt safely.'",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "evidence_1_build_identity",
+    "evidence_2_test_results",
+    "evidence_3_configuration_and_policy",
+    "evidence_4_threat_model_and_security",
+    "evidence_5_authorization_and_eligibility",
+    "evidence_6_observability_readiness",
+    "evidence_7_database_and_event_compatibility",
+    "evidence_8_recovery_and_backup",
+    "evidence_9_gate_report",
+    "evidence_10_post_deployment_verification"
+  ],
+  "properties": {
+    "evidence_1_build_identity": {
+      "$ref": "#/$defs/evidence_1_build_identity",
+      "description": "§8 item 1: 'Source commit, protected-branch review, build identity, toolchain versions, dependency lockfiles, SBOM, provenance, and artifact digest.' Corroborated by 09_TESTING_AND_RELEASE_EVIDENCE.md §Evidence package and 02_POLYGLOT_ENGINEERING_STANDARD.md §10 supply-chain baseline."
+    },
+    "evidence_2_test_results": {
+      "$ref": "#/$defs/evidence_2_test_results",
+      "description": "§8 item 2: 'Passing unit, integration, contract, property/invariant, migration, security, privacy, accessibility, load, resilience, and recovery tests applicable to the change.' Corroborated by 09_TESTING_AND_RELEASE_EVIDENCE.md §CI gates and 24_ENTERPRISE_RELEASE_STANDARD.md §11 item 1."
+    },
+    "evidence_3_configuration_and_policy": {
+      "$ref": "#/$defs/evidence_3_configuration_and_policy",
+      "description": "§8 item 3: 'Configuration and policy bundle digests, reviewed diffs, feature-flag state, schema version, and rollback/forward-fix procedure.' Corroborated by 17_CONFIGURATION_AND_RISK_POLICY.md §1 and §6 and 24_ENTERPRISE_RELEASE_STANDARD.md §5."
+    },
+    "evidence_4_threat_model_and_security": {
+      "$ref": "#/$defs/evidence_4_security",
+      "description": "§8 item 4: 'Threat model and security review status; no unresolved release-blocking finding or expired exception.' Corroborated by 06_SECURITY_AND_ACCESS_CONTROL.md §8 and 24_ENTERPRISE_RELEASE_STANDARD.md §7."
+    },
+    "evidence_5_authorization_and_eligibility": {
+      "$ref": "#/$defs/evidence_5_authorization_eligibility",
+      "description": "§8 item 5: 'Authorization and dual-control evidence for privileged changes; exact-scope eligibility evidence where applicable.' Corroborated by 11_EXECUTION_GATES.md G11, 21_ZERO_TRUST_SSO_AND_AUTHORIZATION.md §6, and 18_GOVERNANCE_DATA_AND_COMPLIANCE.md §5."
+    },
+    "evidence_6_observability_readiness": {
+      "$ref": "#/$defs/evidence_6_observability",
+      "description": "§8 item 6: 'Observability readiness: dashboards, alert routes, on-call owner, SLO impact, and incident runbook.' Corroborated by 08_NFR_OBSERVABILITY_AND_CAPACITY.md §Observability ('alerts without a response action are not production alerts') and 24_ENTERPRISE_RELEASE_STANDARD.md §2 ('Every production alert has an owner and executable response procedure')."
+    },
+    "evidence_7_database_and_event_compatibility": {
+      "$ref": "#/$defs/evidence_7_compatibility",
+      "description": "§8 item 7: 'Database and event compatibility proof, including replay/idempotency behavior where applicable.' Corroborated by 24_ENTERPRISE_RELEASE_STANDARD.md §5 (expand/contract migration discipline) and 05_PERSISTENCE_EVENTING_RECONCILIATION.md §Outbox."
+    },
+    "evidence_8_recovery_and_backup": {
+      "$ref": "#/$defs/evidence_8_recovery",
+      "description": "§8 item 8: 'Recovery and backup evidence within the required exercise window; recovery hold and resume authorization evidence.' Corroborated by 10_OPERATIONS_AND_DISASTER_RECOVERY.md §Drill schedule (monthly backup restore verification, quarterly regional recovery exercise) and §Recovery topology (RECOVERY_HOLD)."
+    },
+    "evidence_9_gate_report": {
+      "$ref": "#/$defs/evidence_9_gate_report",
+      "description": "§8 item 9: 'Gate report with binary PASS/FAIL, evidence references, reviewer identities, UTC timestamps, commit and artifact digests.' Corroborated by 11_EXECUTION_GATES.md ('partial completion is FAIL, not a percentage') and 20_FINAL_AUDIT_CLOSURE_AND_ACCEPTANCE.md §5 required gate evidence record."
+    },
+    "evidence_10_post_deployment_verification": {
+      "$ref": "#/$defs/evidence_10_post_deployment",
+      "description": "§8 item 10: 'Post-deployment verification plan, canary boundaries, abort criteria, rollback decision owner, and explicit completion record.' Corroborated by 11_EXECUTION_GATES.md G11 (canary, abort criteria, responsible operator) and 24_ENTERPRISE_RELEASE_STANDARD.md §15."
+    }
+  },
+  "$defs": {
+    "sha256_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "A content digest. 25 §8 item 1 records the artifact digest; item 9 records commit and artifact digests."
+    },
+    "evidence_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "digest", "produced_at_utc"],
+      "properties": {
+        "uri": { "type": "string", "minLength": 1, "description": "Immutable URI or repository path. 11_EXECUTION_GATES.md: 'Each gate report must identify its evidence artifacts by immutable URI or repository path and content digest.'" },
+        "digest": { "$ref": "#/$defs/sha256_digest" },
+        "produced_at_utc": { "type": "string", "format": "date-time", "description": "UTC timestamp. 20_FINAL_AUDIT_CLOSURE_AND_ACCEPTANCE.md §5 requires reviewed_at_utc." },
+        "immutable": { "type": "boolean", "default": true, "description": "Whether the artifact is stored under an immutable/WORM policy. 22_AUDIT_INTEGRITY_AND_EVIDENCE.md §4 requires object-lock/WORM retention for audit evidence." }
+      }
+    },
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "role", "authenticated_at_utc"],
+      "properties": {
+        "identity": { "type": "string", "minLength": 1, "description": "Reviewer identity from the identity broker. 21_ZERO_TRUST_SSO_AND_AUTHORIZATION.md §4: 'service identities cannot impersonate humans'." },
+        "role": { "type": "string", "enum": ["OWNER", "TRADING_OPERATOR", "RISK_OPERATOR", "RESEARCHER", "PLATFORM_OPERATOR", "AUDITOR"], "description": "21_ZERO_TRUST_SSO_AND_AUTHORIZATION.md §5 role baseline." },
+        "authenticated_at_utc": { "type": "string", "format": "date-time" },
+        "step_up_satisfied": { "type": "boolean", "description": "Whether phishing-resistant step-up was completed. 06_SECURITY_AND_ACCESS_CONTROL.md §2 requires step-up for live activation, risk-policy changes, credential rotation, permission grants, account/venue enablement, emergency override, and confidential export, with re-authentication freshness at most 5 minutes." },
+        "distinct_from_requester": { "type": "boolean", "description": "Whether this identity is distinct from the requester. 06_SECURITY_AND_ACCESS_CONTROL.md §3: 'The initiating actor and approver must be distinct identities.'" }
+      }
+    },
+    "test_suite_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suite", "result", "evidence"],
+      "properties": {
+        "suite": { "type": "string", "enum": ["unit", "integration", "contract", "property_invariant", "migration", "security", "privacy", "accessibility", "load", "resilience", "recovery"], "description": "09_TESTING_AND_RELEASE_EVIDENCE.md §Test pyramid and 25 §8 item 2." },
+        "result": { "type": "string", "enum": ["PASS", "FAIL"] },
+        "evidence": { "$ref": "#/$defs/evidence_reference" },
+        "failures": { "type": "array", "items": { "type": "string" }, "default": [] }
+      }
+    },
+    "evidence_1_build_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_commit", "protected_branch_review", "build_identity", "toolchain_versions", "dependency_lockfiles", "sbom", "provenance", "artifact_digests"],
+      "properties": {
+        "source_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$", "description": "Source commit SHA. 09_TESTING_AND_RELEASE_EVIDENCE.md §Evidence package." },
+        "protected_branch_review": { "type": "object", "additionalProperties": true, "description": "Review record proving mandatory code review on a protected branch. 06_SECURITY_AND_ACCESS_CONTROL.md §7 lists 'protected branches; mandatory code review' as mandatory controls." },
+        "build_identity": { "$ref": "#/$defs/evidence_reference" },
+        "toolchain_versions": {
+          "type": "object",
+          "description": "Exact pinned toolchain versions. 23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §7: versions are 'pinned exactly, and recorded in release evidence. End-of-life runtimes are prohibited.' 00_README.md §Toolchain lifecycle: 'CI must fail on unpinned dependencies or toolchain drift.'",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "dependency_lockfiles": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evidence_reference" },
+          "description": "Lockfiles for every language in the polyglot build. 02_POLYGLOT_ENGINEERING_STANDARD.md: 'Dependencies are pinned by lockfiles.'"
+        },
+        "sbom": { "$ref": "#/$defs/evidence_reference" },
+        "provenance": { "$ref": "#/$defs/evidence_reference" },
+        "artifact_digests": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/sha256_digest" },
+          "description": "Every promoted artifact digest. 24_ENTERPRISE_RELEASE_STANDARD.md §15: 'Production releases use immutable artifacts'; no rebuild between environments."
+        },
+        "images_digest_pinned": { "type": "boolean", "const": true, "description": "Must be true: no mutable tag and no :latest reference anywhere. 23 §2 requires immutable OCI images." }
+      }
+    },
+    "evidence_2_test_results": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suites"],
+      "properties": {
+        "suites": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/test_suite_result" } },
+        "all_applicable_suites_passed": { "type": "boolean", "const": true, "description": "25 §8 item 2 requires passing results for all tests applicable to the change." },
+        "mandatory_financial_invariants_verified": {
+          "type": "array",
+          "minItems": 8,
+          "items": { "type": "string" },
+          "description": "09_TESTING_AND_RELEASE_EVIDENCE.md §Mandatory financial invariants enumerates 8 invariants that MUST each have automated coverage."
+        }
+      }
+    },
+    "evidence_3_configuration_and_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["configuration_digest", "policy_bundle_digest", "reviewed_diff", "feature_flag_state", "schema_version", "rollback_procedure"],
+      "properties": {
+        "configuration_digest": { "$ref": "#/$defs/sha256_digest", "description": "17_CONFIGURATION_AND_RISK_POLICY.md §1: configuration is 'immutable after activation'; a change creates a new revision." },
+        "policy_bundle_digest": { "$ref": "#/$defs/sha256_digest", "description": "21_ZERO_TRUST_SSO_AND_AUTHORIZATION.md §10: policies are 'version-controlled, peer-reviewed, signed, and deployed as immutable bundles'." },
+        "reviewed_diff": { "type": "string", "minLength": 1, "description": "Reviewable diff. 24_ENTERPRISE_RELEASE_STANDARD.md §2: 'diff review'." },
+        "feature_flag_state": {
+          "type": "array",
+          "description": "Every flag with environment, scope, expiry, owner, approval, and kill switch. 24 §3: 'Feature flags are configuration, not authorization... Every flag has an owner, scope, creation time, expiry, reason, and audit record.'",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "owner", "scope", "environment", "created_at_utc", "expires_at_utc", "reason", "dual_approved"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "owner": { "type": "string", "minLength": 1 },
+              "scope": { "type": "string", "minLength": 1 },
+              "environment": { "type": "string", "enum": ["dev", "test", "staging", "paper", "shadow", "live"] },
+              "created_at_utc": { "type": "string", "format": "date-time" },
+              "expires_at_utc": { "type": "string", "format": "date-time" },
+              "reason": { "type": "string", "minLength": 1 },
+              "kill_switch": { "type": "boolean", "const": true, "description": "24 §2 requires a kill switch for every feature flag." },
+              "dual_approved": { "type": "boolean", "description": "24 §3: 'Production flags affecting risk, identity, reconciliation, ledger, or execution behavior require dual approval.'", "default": false },
+              "affects_authoritative_behavior": { "type": "boolean", "default": false }
+            }
+          }
+        },
+        "schema_version": { "type": "string", "minLength": 1, "description": "25 §8 item 3 requires the schema version." },
+        "rollback_procedure": { "type": "string", "minLength": 1, "description": "24_ENTERPRISE_RELEASE_STANDARD.md §15: rollback uses a previously verified immutable artifact and compatible schema state." },
+        "forward_fix_plan": { "type": "string", "minLength": 1 },
+        "drift_check_performed": { "type": "boolean", "const": true, "description": "24 §5: 'Drift detection compares desired and observed state continuously'." }
+      }
+    },
+    "evidence_4_security": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["threat_model", "security_review_status", "unresolved_release_blocking_findings", "expired_exceptions", "penetration_test"],
+      "properties": {
+        "threat_model": { "$ref": "#/$defs/evidence_reference", "description": "24 §7: 'Threat models are maintained for identity, control-plane APIs, AI/research ingestion, adapters, persistence, audit evidence, and recovery infrastructure.'" },
+        "security_review_status": { "type": "string", "enum": ["PASS", "FAIL"] },
+        "unresolved_release_blocking_findings": { "type": "array", "maxItems": 0, "description": "Must be empty. 25 §8 item 4: 'no unresolved release-blocking finding'." },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "severity", "status", "remediation_deadline_utc"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+              "status": { "type": "string", "enum": ["open", "remediated", "accepted_with_compensating_control"] },
+              "remediation_deadline_utc": { "type": "string", "format": "date-time", "description": "06_SECURITY_AND_ACCESS_CONTROL.md §7: 'Critical vulnerability remediation target is 24 hours for exploitable internet-facing components and 7 days for other production components'." },
+              "compensating_control": { "type": "string" },
+              "expires_at_utc": { "type": "string", "format": "date-time", "description": "24 §7: 'Security exceptions are time-bounded and automatically expire.'" }
+            }
+          }
+        },
+        "expired_exceptions": { "type": "array", "maxItems": 0, "description": "Must be empty. 25 §8 item 4." },
+        "penetration_test": { "$ref": "#/$defs/evidence_reference", "description": "06 §8: 'external penetration test before live activation and annually thereafter'." },
+        "scans": { "type": "array", "items": { "$ref": "#/$defs/evidence_reference" }, "description": "SAST, dependency scan, license scan, container scan, IaC scan, DAST, secret scan. 06 §7 mandatory controls." }
+      }
+    },
+    "evidence_5_authorization_eligibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorization_test_vectors", "dual_control", "eligibility_scope_applicable"],
+      "properties": {
+        "authorization_test_vectors": { "$ref": "#/$defs/evidence_reference", "description": "21_ZERO_TRUST_SSO_AND_AUTHORIZATION.md §9 enumerates the required negative and positive authorization test cases." },
+        "dual_control": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requester", "approver", "distinct", "exact_diff_reviewed", "approval_expires_at_utc", "evidence"],
+          "properties": {
+            "requester": { "$ref": "#/$defs/reviewer" },
+            "approver": { "$ref": "#/$defs/reviewer" },
+            "distinct": { "type": "boolean", "const": true, "description": "06_SECURITY_AND_ACCESS_CONTROL.md §3 requires distinct identities for financial control actions." },
+            "exact_diff_reviewed": { "type": "boolean", "const": true, "description": "21 §6: 'Any change to the diff invalidates approval.'" },
+            "approval_expires_at_utc": { "type": "string", "format": "date-time", "description": "21 §6: approval expires after 24 hours and must be renewed." }
+          }
+        },
+        "eligibility_scope_applicable": { "type": "boolean", "description": "Whether this release touches a jurisdiction-eligible scope." },
+        "eligibility_evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence_reference" }, "description": "Exact-scope eligibility evidence. 18_GOVERNANCE_DATA_AND_COMPLIANCE.md §5: 'No live credentials are provisioned before eligibility approval.'" },
+        "account_holder_adult_and_eligible": { "type": "boolean", "description": "23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §5 requires a legally eligible adult account holder with verified identity and account authority. Non-waivable." }
+      }
+    },
+    "evidence_6_observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dashboards", "alert_routes", "oncall_owner", "slo_impact", "incident_runbooks", "sensitive_data_scan"],
+      "properties": {
+        "dashboards": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence_reference" }, "description": "08 §Observability: dashboards show SLO burn rate, error budget remaining, market/venue/environment segmentation, and deployment annotations." },
+        "alert_routes": { "type": "array", "minItems": 1, "items": { "type": "object", "additionalProperties": false, "required": ["alert_name", "owner", "severity", "runbook_url", "threshold"], "properties": { "alert_name": { "type": "string", "minLength": 1 }, "owner": { "type": "string", "minLength": 1 }, "severity": { "type": "string", "enum": ["SEV-1", "SEV-2", "SEV-3", "SEV-4"] }, "runbook_url": { "type": "string", "minLength": 1 }, "threshold": { "type": "string", "minLength": 1 } } } },
+        "oncall_owner": { "$ref": "#/$defs/reviewer", "description": "25 §7: 'An unowned service is not eligible for production promotion.'" },
+        "slo_impact": { "type": "string", "minLength": 1, "description": "25 §7: SLOs must be measured from user-visible and authoritative outcomes." },
+        "incident_runbooks": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence_reference" }, "description": "24_ENTERPRISE_RELEASE_STANDARD.md §2: 'Every production alert has an owner and executable response procedure.'" },
+        "sensitive_data_scan": { "$ref": "#/$defs/evidence_reference", "description": "25 §5 Observability release evidence includes a 'sensitive-data scan'." },
+        "alert_simulation": { "$ref": "#/$defs/evidence_reference", "description": "25 §5 Observability release evidence includes 'Alert simulation'." }
+      }
+    },
+    "evidence_7_compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["database_compatibility", "event_compatibility", "idempotency_replay_evidence"],
+      "properties": {
+        "database_compatibility": { "$ref": "#/$defs/evidence_reference", "description": "24_ENTERPRISE_RELEASE_STANDARD.md §5: expand/contract migration; a migration must remain compatible with the immediately previous release until rollback is no longer required." },
+        "event_compatibility": { "$ref": "#/$defs/evidence_reference", "description": "02_POLYGLOT_ENGINEERING_STANDARD.md: schema changes require backward compatibility for one release window unless a coordinated migration is executed." },
+        "idempotency_replay_evidence": { "$ref": "#/$defs/evidence_reference", "description": "05_PERSISTENCE_EVENTING_RECONCILIATION.md §Outbox: 'Duplicate publication is acceptable; consumers must be idempotent.' 03_CANONICAL_CONTRACTS.md §Idempotency: 'Database uniqueness constraints enforce idempotency; application memory is never sufficient.'" },
+        "rollback_rehearsal": { "$ref": "#/$defs/evidence_reference" }
+      }
+    },
+    "evidence_8_recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backup_restore_evidence", "recovery_exercise_evidence", "recovery_hold_authorization"],
+      "properties": {
+        "backup_restore_evidence": { "$ref": "#/$defs/evidence_reference", "description": "10_OPERATIONS_AND_DISASTER_RECOVERY.md §Drill schedule: 'Monthly backup restore verification.' 05_PERSISTENCE_EVENTING_RECONCILIATION.md §Backup additionally requires weekly restore verification." },
+        "last_restore_verification_utc": { "type": "string", "format": "date-time" },
+        "recovery_exercise_evidence": { "$ref": "#/$defs/evidence_reference", "description": "10 §Drill schedule: 'Quarterly regional recovery exercise.'" },
+        "recovery_hold_authorization": { "$ref": "#/$defs/evidence_reference", "description": "10: 'Re-enable requires: database/ledger invariants pass; order/fill/balance/position reconciliation completed or explicitly dispositioned; market-data freshness verified; risk configuration and signing keys verified; smoke/fault checks pass; and two distinct authorized approvers sign the scope-specific release.'" },
+        "rto_minutes_target": { "type": "number", "const": 30, "description": "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Recovery objectives. Non-waivable per 11_EXECUTION_GATES.md." },
+        "rpo_minutes_target": { "type": "number", "const": 5, "description": "08 §Recovery objectives. Non-waivable per 11_EXECUTION_GATES.md." },
+        "rto_minutes_observed": { "type": "number", "description": "Measured elapsed time from declared incident start to restored service. 08: objectives are 'measured from declared incident start to restored service and validated by drills'." },
+        "rpo_minutes_observed": { "type": "number" },
+        "objectives_demonstrated": { "type": "boolean", "description": "12_DECISION_REGISTER.md ADR-025: 'The platform must not claim these objectives until restore/failover drills demonstrate them.'" }
+      }
+    },
+    "evidence_9_gate_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate_id", "result", "evidence_references", "reviewers", "reviewed_at_utc", "source_commit", "artifact_digests"],
+      "properties": {
+        "gate_id": { "type": "string", "pattern": "^G(0|1|2|3|4|5|6|7|8|9|10|11)$", "description": "11_EXECUTION_GATES.md defines G0 through G11. G0 is package/spec integrity; G11 is a separate, dual-approved live-activation decision." },
+        "result": { "type": "string", "enum": ["PASS", "FAIL"], "description": "Binary only. 11: 'A gate is PASS only when every listed criterion is satisfied; partial completion is FAIL, not a percentage.'" },
+        "evidence_references": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence_reference" } },
+        "reviewers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/reviewer" } },
+        "reviewed_at_utc": { "type": "string", "format": "date-time" },
+        "source_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "artifact_digests": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/sha256_digest" } },
+        "scope": { "type": "string", "minLength": 1, "description": "20_FINAL_AUDIT_CLOSURE_AND_ACCEPTANCE.md §5 requires a `scope` field." },
+        "environment": { "type": "string", "enum": ["dev", "test", "staging", "paper", "shadow", "live"] },
+        "exceptions": { "type": "array", "items": { "type": "string" }, "default": [], "description": "20 §5 requires an `exceptions` field. 11: any noncritical exception requires a time-bounded risk acceptance by the owner and security/risk reviewers, a compensating control, expiry date, and linked remediation issue; it 'does not convert a failed mandatory criterion into PASS'." },
+        "next_action": { "type": "string", "minLength": 1, "description": "20 §5 requires a `next_action` field." },
+        "waiver": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "25 §8: a waiver must be time-bounded, narrowly scoped, approved by the accountable risk owner AND security owner. It 'cannot waive legal eligibility, adult account-holder requirements, audit integrity, risk authorization, or the ability to halt safely.' 11_EXECUTION_GATES.md additionally prohibits waivers for financial invariants, authorization, live credential isolation, reconciliation, halt controls, and recovery objectives.",
+          "required": ["scope", "risk_owner", "security_owner", "expires_at_utc", "compensating_control", "remediation_issue"],
+          "properties": {
+            "scope": { "type": "string", "minLength": 1 },
+            "risk_owner": { "type": "string", "minLength": 1 },
+            "security_owner": { "type": "string", "minLength": 1 },
+            "expires_at_utc": { "type": "string", "format": "date-time" },
+            "compensating_control": { "type": "string", "minLength": 1 },
+            "remediation_issue": { "type": "string", "minLength": 1 },
+            "covers_non_waivable_control": { "type": "boolean", "const": false }
+          }
+        }
+      }
+    },
+    "evidence_10_post_deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verification_plan", "canary_boundaries", "abort_criteria", "rollback_decision_owner", "completion_record"],
+      "properties": {
+        "verification_plan": { "type": "string", "minLength": 1 },
+        "canary_boundaries": { "type": "string", "minLength": 1, "description": "11_EXECUTION_GATES.md G11: 'a canary activation runs in the narrowest permitted scope'." },
+        "abort_criteria": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "rollback_decision_owner": { "type": "string", "minLength": 1 },
+        "completion_record": { "type": "string", "minLength": 1, "description": "25 §8 item 10 requires an explicit completion record." },
+        "audit_chain_verified_before_and_after": { "type": "boolean", "const": true, "description": "24_ENTERPRISE_RELEASE_STANDARD.md §11 item 7: 'Audit-chain verification passes before and after deployment.' 22_AUDIT_INTEGRITY_AND_EVIDENCE.md §3: verification runs after restore/deployment." }
+      }
+    }
+  },
+  "x-blueprint-constraints": {
+    "waivable": false,
+    "citation": "25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md §8: a waiver 'cannot waive legal eligibility, adult account-holder requirements, audit integrity, risk authorization, or the ability to halt safely.' 11_EXECUTION_GATES.md: 'Waivers are prohibited for financial invariants, authorization, live credential isolation, reconciliation, halt controls, and recovery objectives.'",
+    "missing_evidence_result": "RELEASE FAILURE",
+    "citation_missing": "25 §8: 'Missing, stale, unverifiable, or contradictory evidence is a release failure.'",
+    "documentation_alone_sufficient": false,
+    "citation_documentation": "25 §1: 'The only valid runtime release status is the status supported by signed evidence under 11_EXECUTION_GATES.md.' 11: 'This gate is not satisfied by documentation alone.'"
+  }
+}

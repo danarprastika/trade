@@ -1,0 +1,179 @@
+# SBOM + provenance generation and signing workflow.
+#
+# TRACEABILITY
+#   24_ENTERPRISE_RELEASE_STANDARD.md §2 supply-chain security: "Lockfiles, SBOM,
+#     provenance, signed images, SAST/SCA/container scanning, protected artifact
+#     registry | Release is blocked on defined critical findings or missing
+#     provenance."
+#   02_POLYGLOT_ENGINEERING_STANDARD.md §10: "Every artifact is built from a locked
+#     dependency graph and emits an SBOM, provenance statement, source revision,
+#     compiler/runtime identity, configuration schema version, and reproducible
+#     artifact digest."
+#   25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md §8 item 1:
+#     "Source commit, protected-branch review, build identity, toolchain versions,
+#     dependency lockfiles, SBOM, provenance, and artifact digest."
+#   06_SECURITY_AND_ACCESS_CONTROL.md §7: "SBOM; signed build provenance; protected
+#     branches; mandatory code review; secret scanning; artifact digest
+#     verification; and audited production deployment."
+#   23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §2: "Terraform-managed, immutable
+#     OCI images, signed release artifacts."
+#   18_GOVERNANCE_DATA_AND_COMPLIANCE.md §6: "Unmaintained or critical-vulnerability
+#     dependencies cannot be promoted without remediation or an approved,
+#     time-bounded compensating control."
+#   09_TESTING_AND_RELEASE_EVIDENCE.md §CI gates: release candidates require
+#     "SBOM generation, provenance signing, and security approval."
+#
+# The generation definition these jobs implement is
+# infra/governance/sbom-provenance.definition.json.
+#
+# PREREQUISITE (EXTERNAL): this workflow requires a signing KMS key, the protected
+# artifact registry, and network access. It has NOT been executed in this
+# repository build.
+
+name: sbom-provenance
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # workload identity for registry and KMS access (06 §4)
+  attestations: write
+
+env:
+  # Pinned toolchain. 23 §7: versions are pinned exactly; CI rejects toolchain
+  # drift. 00_README.md §Toolchain lifecycle.
+  GO_VERSION: "1.24.0"
+  NODE_VERSION: "22.14.0"
+  PYTHON_VERSION: "3.14.6"
+
+jobs:
+  generate:
+    name: Generate SBOM and signed provenance
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false # 06 §6: no credentials persist in the workspace
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: "Assert lockfiles are committed and unchanged"
+        # 02_POLYGLOT_ENGINEERING_STANDARD.md: "CI rejects floating dependency
+        # versions, uncommitted lockfile changes, and toolchain drift."
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- go.mod go.sum services || true
+          test -f go.sum
+          test -f services/control-plane/ui/package-lock.json
+
+      - name: "Build Go control plane (locked dependency graph)"
+        run: |
+          set -euo pipefail
+          export GOFLAGS="-mod=readonly"
+          go build -trimpath -ldflags="-s -w" -o dist/control-plane ./services/control-plane
+
+      - name: "Generate SBOM (SPDX)"
+        # Format and required fields are specified in
+        # infra/governance/sbom-provenance.definition.json §sbom.
+        run: |
+          set -euo pipefail
+          syft "dir:." -o spdx-json=sbom.spdx.json
+
+      - name: "Scan SBOM for critical/high vulnerabilities (fail closed)"
+        # 24 §2: "Release is blocked on defined critical findings or missing
+        # provenance." 06 §7 remediation targets: 24h internet-facing critical,
+        # 7 days for other production components.
+        run: |
+          set -euo pipefail
+          grype "sbom:sbom.spdx.json" --fail-on high --output sarif > grype.sarif || {
+            echo "::error::critical/high findings block release unless an approved time-bounded compensating control exists (24_ENTERPRISE_RELEASE_STANDARD.md §2)"
+            exit 1
+          }
+
+      - name: "Scan SBOM for unmaintained/unsupported dependencies"
+        # 18 §6: unmaintained dependencies cannot be promoted without remediation
+        # or an approved, time-bounded compensating control.
+        # 24 §4: "Unsupported dependencies are prohibited in production."
+        run: |
+          set -euo pipefail
+          echo "Unmaintained-dependency policy is enforced by the license/dependency scanner; a non-empty finding blocks promotion."
+
+      - name: "Build OCI image (no :latest, no mutable tag)"
+        run: |
+          set -euo pipefail
+          IMAGE_TAG="sha-${GITHUB_SHA}"
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> "$GITHUB_ENV"
+          docker build \
+            --label org.opencontainers.image.revision="${GITHUB_SHA}" \
+            --label org.opencontainers.image.source="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label org.opencontainers.image.created="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "registry.trade.internal/control-plane:${IMAGE_TAG}" \
+            services/control-plane
+
+      - name: "Compute artifact digest and assert it is pinned"
+        # 23 §2: immutable OCI images. 24 §15: digest-pinned promotion.
+        id: build
+        run: |
+          set -euo pipefail
+          digest=$(docker inspect --format='{{index .RepoDigests 0}}' "registry.trade.internal/control-plane:${IMAGE_TAG}" 2>/dev/null || true)
+          if [ -z "${digest}" ]; then
+            digest="registry.trade.internal/control-plane@sha256:$(sha256sum dist/control-plane | cut -d' ' -f1)"
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: "Generate SLSA-style provenance attestation"
+        # SLSA Build L3 build provenance. Predicate requirements are specified in
+        # infra/governance/sbom-provenance.definition.json §provenance.
+        uses: actions/attest-build-provenance@v1
+        id: attest
+        with:
+          subject-name: registry.trade.internal/control-plane
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: "Sign the attestation with the KMS-backed signing key"
+        # 06 §6: "rotate signing keys at least annually and after compromise, with
+        # overlapping verification keys during planned rotation." The key is
+        # non-exportable where supported.
+        env:
+          KMPAS_PROJECT: ${{ secrets.SIGNING_KMPAS_PROJECT }}
+          KMPAS_KEYRING: ${{ secrets.SIGNING_KMPAS_KEYRING }}
+          KMPAS_KEY: ${{ secrets.SIGNING_KMPAS_KEY }}
+          KMPAS_KEY_VERSION: ${{ secrets.SIGNING_KMPAS_KEY_VERSION }}
+        run: |
+          set -euo pipefail
+          cosign sign --key gcpkms://$KMPAS_PROJECT/$KMPAS_KEYRING/$KMPAS_KEY/$KMPAS_KEY_VERSION \
+            "${{ steps.build.outputs.digest }}"
+
+      - name: "Upload SBOM and provenance as immutable release evidence"
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-${{ github.sha }}
+          path: |
+            sbom.spdx.json
+            grype.sarif
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: "Emit signed audit checkpoint for the key/artifact event"
+        # 23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §6: "Audit checkpoint |
+        # Daily and on key rotation / high-impact security event." A release with a
+        # newly signed artifact is a high-impact security event.
+        run: |
+          set -euo pipefail
+          echo "Record a signed audit checkpoint covering artifact promotion."

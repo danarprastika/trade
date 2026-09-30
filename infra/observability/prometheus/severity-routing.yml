@@ -1,0 +1,158 @@
+# SEV-1..SEV-4 severity model and alert routing.
+#
+# 08_NFR_OBSERVABILITY_AND_CAPACITY.md §Observability:
+#   "Alerts are severity-based. SEV-1 indicates active risk of unauthorized or
+#    uncontrolled financial action or loss of authoritative state. SEV-2 indicates
+#    major degradation requiring immediate operator intervention. SEV-3 is contained
+#    service degradation. SEV-4 is non-urgent defect or maintenance issue."
+#
+# 10_OPERATIONS_AND_DISASTER_RECOVERY.md §Incident command:
+#   "SEV-1 incidents require an Incident Commander, Technical Lead, Risk Owner, and
+#    Communications Owner. The Incident Commander controls coordination; the Risk
+#    Owner controls trading halt/re-enable decisions."
+#
+# 18_GOVERNANCE_DATA_AND_COMPLIANCE.md §1: "The owner is accountable for business
+# purpose, eligible account holder status, jurisdiction scope, market enablement,
+# risk mandate, and live activation. Engineering owns system integrity and release
+# evidence. Risk operations owns policy review, halt decisions, and re-enable
+# validation. Platform operations owns deployment and recovery."
+#
+# This file is ROUTING CONFIGURATION, not alert rules. It intentionally contains no
+# `alert:` blocks: every alert lives in rules/*.yml where owner, severity,
+# runbook_url, and an actionable threshold are mandatory and test-enforced.
+
+severity_model:
+  SEV-1:
+    definition: >-
+      Active risk of unauthorized or uncontrolled financial action, or loss of
+      authoritative state. 08 §Observability.
+    page_immediately: true
+    # 08 §Error budgets and alert thresholds: "Page immediately for any
+    # unauthorized order, risk/OMS authority loss, live credential exposure,
+    # system halt failure, or material ledger/reconciliation integrity break."
+    immediate_page_conditions:
+      - unauthorized order accepted
+      - risk/OMS authority loss
+      - live credential exposure
+      - system halt failure
+      - material ledger/reconciliation integrity break
+    response_time: "immediate, 24x7"
+    incident_command: required # 10 §Incident command
+    roles_required:            # 10 §Incident command
+      - Incident Commander
+      - Technical Lead
+      - Risk Owner
+      - Communications Owner
+    halt_authority: Risk Owner # 10 §Incident command
+    re_enable_authority: "Risk Owner plus a second distinct authorized approver (06_SECURITY_AND_ACCESS_CONTROL.md §3)"
+    break_glass_available: true # 06 §5; two-person release, 30-minute maximum
+    executive_notification: true
+    runbooks:
+      - https://runbooks.trade.internal/incident-sev1-response
+      - https://runbooks.trade.internal/kill-switch-halt-activation
+      - https://runbooks.trade.internal/audit-chain-verification
+
+  SEV-2:
+    definition: >-
+      Major degradation requiring immediate operator intervention. 08
+      §Observability.
+    page_immediately: false
+    page_after: "2m sustained" # 08 §4: "persists for two minutes"
+    response_time: "15 minutes"
+    incident_command: on_escalation
+    roles_required:
+      - Technical Lead
+      - Risk Owner
+    runbooks:
+      - https://runbooks.trade.internal/incident-sev2-response
+      - https://runbooks.trade.internal/incident-sev3-response
+
+  SEV-3:
+    definition: "Contained service degradation. 08 §Observability."
+    page_immediately: false
+    response_time: "4 hours"
+    ticket_required: true
+    post_incident_review: false # 24 §2: "Every SEV-1/2 has complete timeline..."
+    runbooks:
+      - https://runbooks.trade.internal/incident-sev3-response
+
+  SEV-4:
+    definition: "Non-urgent defect or maintenance issue. 08 §Observability."
+    page_immediately: false
+    response_time: "next scheduled maintenance window"
+    ticket_required: true
+    runbooks:
+      - https://runbooks.trade.internal/incident-sev4-response
+
+# --- Routing -----------------------------------------------------------------
+# 25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md §5
+# Observability: "Correlated traces, metrics, structured logs, alert ownership,
+# SLO/error budget, audit-safe redaction". §7: "Every production service must
+# have a named owner, primary and secondary on-call coverage".
+# 24_ENTERPRISE_RELEASE_STANDARD.md §2 Operational readiness: "Every production
+# alert has an owner and executable response procedure."
+#
+# Each route requires BOTH primary and secondary coverage; an unowned route is not
+# eligible for production promotion (25 §7: "An unowned service is not eligible
+# for production promotion.").
+
+routes:
+  risk_oms_authority:
+    primary: risk-operations-primary
+    secondary: risk-operations-secondary
+    severities: [SEV-1, SEV-2]
+    authority_note: "Risk operations owns halt decisions and re-enable validation (18_GOVERNANCE_DATA_AND_COMPLIANCE.md §1)."
+
+  platform_operations:
+    primary: platform-operations-primary
+    secondary: platform-operations-secondary
+    severities: [SEV-1, SEV-2, SEV-3]
+    authority_note: "Platform operations owns deployment and recovery (18 §1)."
+
+  security_and_audit:
+    primary: security-oncall-primary
+    secondary: security-oncall-secondary
+    severities: [SEV-1]
+    authority_note: "Audit chain breaks and credential exposure are SEV-1 security events (22_AUDIT_INTEGRITY_AND_EVIDENCE.md §3)."
+
+  owner_notification:
+    primary: owner
+    secondary: owner-delegate
+    severities: [SEV-1]
+    authority_note: "The owner is accountable for live activation, risk mandate, and jurisdiction scope (18 §1). 11_EXECUTION_GATES.md G11 requires recorded owner authorization."
+
+# --- Alert-quality contract ---------------------------------------------------
+# 08 §Observability: "Alerts must have an owner, severity, runbook, and actionable
+# threshold; alerts without a response action are not production alerts."
+alert_quality_contract:
+  required_labels:
+    - owner
+    - severity
+    - runbook_url
+  required_annotations:
+    - summary
+    - description
+    - threshold
+    - threshold_citation
+    - action
+  enforcement_test: infra/tests/test_alert_rules.py
+  non_conformance_result: "alert is not a production alert and must not be deployed"
+
+# --- Suppression policy -------------------------------------------------------
+# 08 §Measurement boundaries: "Planned maintenance is excluded only when announced
+# at least 72 hours ahead, approved, and limited to a maximum of two hours per
+# calendar month. Excess maintenance time counts as unavailable. ... No availability
+# exclusion may be retroactively applied without an incident record and independent
+# owner review."
+suppression_policy:
+  availability_exclusion_requires:
+    notice_hours: 72 # 08 §1 and §Measurement boundaries
+    approval: required
+    max_minutes_per_calendar_month: 120 # 08: "maximum of two hours per calendar month"
+    retroactivity: prohibited
+    independent_owner_review: required
+  # Safety invariants are never suppressed. 08 §Measurement boundaries: "Safety
+  # invariants are not traded against availability."
+  never_suppress:
+    - invariant_zero_tolerance
+    - SEV-1

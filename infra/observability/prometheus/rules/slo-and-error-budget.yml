@@ -1,0 +1,313 @@
+# SLO, availability, latency, and error-budget alert rules.
+#
+# EVERY ALERT IN THIS FILE CARRIES: owner, severity, runbook_url, and an
+# actionable `threshold` annotation.
+#
+# 08_NFR_OBSERVABILITY_AND_CAPACITY.md §Observability: "Alerts must have an
+# owner, severity, runbook, and actionable threshold; alerts without a response
+# action are not production alerts."
+# 24_ENTERPRISE_RELEASE_STANDARD.md §2 Operational readiness: "Every production
+# alert has an owner and executable response procedure."
+# 25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md §5
+# Observability: release evidence includes "Alert simulation, dashboard review,
+# sensitive-data scan".
+#
+# `infra/tests/test_alert_rules.py` asserts the presence of owner, severity,
+# runbook_url, and threshold on every alert in every file under
+# infra/observability.
+#
+# THRESHOLD SOURCES (exact values, no interpolation):
+#   error rate > 2% over 5 min       -> 08 §4 (Error budgets and alert thresholds)
+#   risk/OMS error rate > 0.5% / 5min -> 08 §4
+#   p95 > 2x target for 5 min         -> 08 §4
+#   control-plane availability 99.95% -> 08 §1 (21.6 min/month)
+#   risk/OMS availability 99.99%      -> 08 §1 (4.32 min/month)
+#   error budget 0.05% / 0.01%        -> 08 §4
+#   API read p95 200ms, mutation 300ms, risk 20ms, OMS 50ms -> 08 §3
+
+groups:
+  - name: slo-availability
+    interval: 30s
+    rules:
+      # 08 §1: "control-plane error rate >2% over five minutes" pages the on-call
+      # operator when the condition persists for two minutes.
+      - alert: ControlPlaneErrorRateHigh
+        expr: |
+          (
+            sum(rate(http_server_request_duration_seconds_count{environment=~"live|paper|shadow|production|staging",service_class!="risk_oms",code=~"5..|.*timeout.*|.*unavailable.*"}[5m]))
+            /
+            sum(rate(http_server_request_duration_seconds_count{environment=~"live|paper|shadow|production|staging",service_class!="risk_oms"}[5m]))
+          ) > 0.02
+        for: 2m
+        labels:
+          severity: SEV-2
+          owner: platform-operations-oncall
+          sre_owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          slo_class: control_plane
+          runbook_url: https://runbooks.trade.internal/incident-sev2-response
+        annotations:
+          summary: "Control-plane error rate above 2% over five minutes"
+          description: >-
+            Server 5xx, timeout, and readiness-failure rate for the public control
+            plane exceeds 2% over a five-minute window and has persisted for two
+            minutes. 08_NFR_OBSERVABILITY_AND_CAPACITY.md §4: "control-plane error
+            rate >2% over five minutes" pages the on-call operator.
+          threshold: "error_rate > 0.02 over 5m window, sustained 2m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds"
+          action: >-
+            Page PLATFORM_OPERATIONS on-call. Confirm whether the fault is inside the
+            platform boundary or caused by a venue (venue downtime is excluded from
+            platform availability, 08 §1). If the fault is internal, apply load
+            shedding to non-authoritative workloads first (25 §6: "preserve risk,
+            OMS, ledger, audit, and halt capability") and run the SEV-2 procedure.
+
+      # 08 §4: "risk/OMS error rate >0.5% over five minutes".
+      - alert: RiskOMSErrorRateHigh
+        expr: |
+          (
+            sum(rate(http_server_request_duration_seconds_count{environment=~"live|paper|shadow|production",service_class="risk_oms",code=~"5..|.*timeout.*|.*unavailable.*"}[5m]))
+            /
+            sum(rate(http_server_request_duration_seconds_count{environment=~"live|paper|shadow|production",service_class="risk_oms"}[5m]))
+          ) > 0.005
+        for: 2m
+        labels:
+          severity: SEV-1
+          owner: risk-operations-oncall
+          risk_owner: risk-operations-oncall
+          team: RISK_OPERATIONS
+          slo_class: risk_oms
+          runbook_url: https://runbooks.trade.internal/incident-sev1-response
+        annotations:
+          summary: "Internal risk/OMS error rate above 0.5% over five minutes"
+          description: >-
+            Error rate on the internal critical risk/OMS path exceeds 0.5% over a
+            five-minute window and has persisted for two minutes. 08 §4:
+            "risk/OMS error rate >0.5% over five minutes" pages the on-call
+            operator. This path is the authoritative financial veto.
+          threshold: "error_rate > 0.005 over 5m window, sustained 2m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds"
+          action: >-
+            Page RISK_OPERATIONS on-call immediately. RISK_OPERATIONS owns halt
+            decisions (18_GOVERNANCE_DATA_AND_COMPLIANCE.md §1). If authoritative
+            risk state cannot be established, activate the halt per 17_
+            CONFIGURATION_AND_RISK_POLICY.md §2 and 10_OPERATIONS_AND_DISASTER_
+            RECOVERY.md §Immediate response step 1, then run the SEV-1 procedure.
+
+      # 08 §3: "API read p95 <= 200 ms". 08 §4: "p95 latency >2x target for five
+      # minutes" -> 400 ms.
+      - alert: APIReadLatencyP95Above2xTarget
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, environment, endpoint_class) (
+              rate(http_server_request_duration_seconds_bucket{environment=~"live|paper|shadow|production",endpoint_class="read"}[5m])
+            )
+          ) > 0.4
+        for: 5m
+        labels:
+          severity: SEV-2
+          owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          slo_class: control_plane
+          runbook_url: https://runbooks.trade.internal/incident-sev2-response
+        annotations:
+          summary: "API read p95 above 2x the 200ms target"
+          description: >-
+            API read p95 latency exceeds 0.4 s, which is 2x the 200 ms target
+            defined in 08 §3, sustained for five minutes. 08 §4: "p95 latency >2x
+            target for five minutes" pages the on-call operator.
+          threshold: "p95 > 400ms (2x the 200ms target) for 5m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Latency targets (200 ms) and §Error budgets and alert thresholds (2x for 5 minutes)"
+          action: >-
+            Check PostgreSQL latency and connection saturation, dispatcher queue
+            age, and adapter pool exhaustion. 19_DEPLOYMENT_TOPOLOGY_AND_SIZING.md
+            §3: capacity is reviewed against measured benchmark evidence, so a
+            latency breach is a capacity finding, not a tuning preference.
+
+      # 08 §3: "API mutation acknowledgement p95 <= 300 ms" -> 2x = 600 ms.
+      - alert: APIMutationLatencyP95Above2xTarget
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, environment, endpoint_class) (
+              rate(http_server_request_duration_seconds_bucket{environment=~"live|paper|shadow|production",endpoint_class="mutation"}[5m])
+            )
+          ) > 0.6
+        for: 5m
+        labels:
+          severity: SEV-1
+          owner: platform-operations-oncall
+          risk_owner: risk-operations-oncall
+          team: PLATFORM_OPERATIONS
+          slo_class: risk_oms
+          runbook_url: https://runbooks.trade.internal/incident-sev1-response
+        annotations:
+          summary: "API mutation acknowledgement p95 above 2x the 300ms target"
+          description: >-
+            Mutation acknowledgement p95 exceeds 0.6 s, which is 2x the 300 ms
+            target in 08 §3, sustained for five minutes. Mutation acknowledgement
+            means durable command acceptance, not venue acknowledgement or fill
+            (08 §3), so a breach indicates the authoritative write path is slow.
+          threshold: "p95 > 600ms (2x the 300ms target) for 5m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Latency targets (300 ms) and §Error budgets and alert thresholds (2x for 5 minutes)"
+          action: >-
+            Page on-call. A slow durable-acceptance path risks timeout-driven
+            UNKNOWN outcomes; verify no UNKNOWN orders have accumulated before
+            re-enabling normal throughput.
+
+      # 08 §3: "internal risk evaluation p95 <= 20 ms" -> 2x = 40 ms.
+      - alert: RiskEvaluationLatencyP95Above2xTarget
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, environment) (
+              rate(risk_evaluation_duration_seconds_bucket{environment=~"live|paper|shadow|production"}[5m])
+            )
+          ) > 0.04
+        for: 5m
+        labels:
+          severity: SEV-1
+          owner: risk-operations-oncall
+          team: RISK_OPERATIONS
+          slo_class: risk_oms
+          runbook_url: https://runbooks.trade.internal/incident-sev1-response
+        annotations:
+          summary: "Internal risk evaluation p95 above 2x the 20ms target"
+          description: >-
+            Risk evaluation p95 exceeds 40 ms, which is 2x the 20 ms target in
+            08 §3, sustained for five minutes. Risk evaluation is the
+            deterministic veto for every risk-increasing command; a breach means
+            the veto is not being evaluated inside its objective.
+          threshold: "p95 > 40ms (2x the 20ms target) for 5m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Latency targets (20 ms) and §Error budgets and alert thresholds (2x for 5 minutes)"
+          action: >-
+            RISK_OPERATIONS investigates immediately. Do not raise or relax risk
+            limits to clear this alert; 17_CONFIGURATION_AND_RISK_POLICY.md §3:
+            "No model or strategy may modify its own risk policy or grant itself
+            permission."
+
+      # 08 §3: "OMS state transition p95 <= 50 ms" -> 2x = 100 ms.
+      - alert: OMSStateTransitionLatencyP95Above2xTarget
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, environment) (
+              rate(oms_state_transition_duration_seconds_bucket{environment=~"live|paper|shadow|production"}[5m])
+            )
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: SEV-1
+          owner: risk-operations-oncall
+          team: RISK_OPERATIONS
+          slo_class: risk_oms
+          runbook_url: https://runbooks.trade.internal/incident-sev1-response
+        annotations:
+          summary: "OMS state transition p95 above 2x the 50ms target"
+          description: >-
+            OMS state transition p95 exceeds 100 ms, which is 2x the 50 ms target
+            in 08 §3, sustained for five minutes. 01_SYSTEM_ARCHITECTURE.md §3:
+            the OMS is authoritative for internal order state.
+          threshold: "p95 > 100ms (2x the 50ms target) for 5m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Latency targets (50 ms) and §Error budgets and alert thresholds (2x for 5 minutes)"
+          action: >-
+            Investigate PostgreSQL lock waits and transaction contention. 01 §8
+            requires optimistic concurrency on OMS; last-write-wins is prohibited.
+
+  - name: error-budget
+    interval: 30s
+    rules:
+      # 08 §4: "Monthly error budget is 0.05% for the control plane and 0.01% for
+      # internal risk/OMS. At 50% budget consumption, freeze nonessential releases
+      # and require service-owner review; at 75%, require an incident review and
+      # approved remediation before promotion; at 100%, stop routine production
+      # releases until the SLO is restored or the owner records a time-bounded
+      # exception."
+      - alert: ControlPlaneErrorBudgetFiftyPercentConsumed
+        expr: |
+          (
+            1 - (
+              sum(rate(http_server_request_duration_seconds_count{environment=~"live|paper|shadow|production",service_class!="risk_oms",code!~"4..",service_level_indicator="true"}[30d]))
+              /
+              sum(rate(http_server_request_duration_seconds_count{environment=~"live|paper|shadow|production",service_class!="risk_oms",service_level_indicator="true"}[30d]))
+            )
+          ) > 0.00025
+        labels:
+          severity: SEV-3
+          owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          slo_class: control_plane
+          runbook_url: https://runbooks.trade.internal/incident-sev3-response
+        annotations:
+          summary: "Control-plane error budget 50% consumed"
+          description: "50% of the 0.05% monthly control-plane error budget is consumed. 08 §4 requires a nonessential-release freeze and service-owner review at this point."
+          threshold: "consumed > 50% of the 0.05% monthly budget"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds"
+          action: "Freeze nonessential releases; require the named service owner to review. 25 §7: an SLO exclusion may not be used to hide a failed release."
+
+      - alert: ControlPlaneErrorBudgetSeventyFivePercentConsumed
+        expr: |
+          (
+            1 - (
+              sum(rate(http_server_request_duration_seconds_count{environment=~"live|paper|shadow|production",service_class!="risk_oms",code!~"4..",service_level_indicator="true"}[30d]))
+              /
+              sum(rate(http_server_request_duration_seconds_count{environment=~"live|paper|shadow|production",service_class!="risk_oms",service_level_indicator="true"}[30d]))
+            )
+          ) > 0.000375
+        labels:
+          severity: SEV-2
+          owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          slo_class: control_plane
+          runbook_url: https://runbooks.trade.internal/incident-sev2-response
+        annotations:
+          summary: "Control-plane error budget 75% consumed"
+          description: "75% of the 0.05% monthly control-plane error budget is consumed. 08 §4 requires an incident review and approved remediation before promotion."
+          threshold: "consumed > 75% of the 0.05% monthly budget"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds"
+          action: "Require an incident review and approved remediation before any promotion. 24_ENTERPRISE_RELEASE_STANDARD.md §6: routine feature releases pause while reliability is restored."
+
+      - alert: ControlPlaneErrorBudgetExhausted
+        expr: |
+          (
+            1 - (
+              sum(rate(http_server_request_duration_seconds_count{environment=~"live|paper|shadow|production",service_class!="risk_oms",code!~"4..",service_level_indicator="true"}[30d]))
+              /
+              sum(rate(http_server_request_duration_seconds_count{environment=~"live|paper|shadow|production",service_class!="risk_oms",service_level_indicator="true"}[30d]))
+            )
+          ) > 0.0005
+        labels:
+          severity: SEV-2
+          owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          slo_class: control_plane
+          runbook_url: https://runbooks.trade.internal/incident-sev2-response
+        annotations:
+          summary: "Control-plane error budget exhausted (100%)"
+          description: "The 0.05% monthly control-plane error budget is fully consumed. 08 §4 requires routine production releases to stop until the SLO is restored or the owner records a time-bounded exception."
+          threshold: "consumed > 100% of the 0.05% monthly budget"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds"
+          action: "Stop routine production releases. 25 §7: every exception must have a scope, approver, expiry, compensating control, and audit record."
+
+      - alert: RiskOMSErrorBudgetExhausted
+        expr: |
+          (
+            1 - (
+              sum(rate(http_server_request_duration_seconds_count{environment=~"live|paper|shadow|production",service_class="risk_oms",code!~"4..",service_level_indicator="true"}[30d]))
+              /
+              sum(rate(http_server_request_duration_seconds_count{environment=~"live|paper|shadow|production",service_class="risk_oms",service_level_indicator="true"}[30d]))
+            )
+          ) > 0.0001
+        labels:
+          severity: SEV-1
+          owner: risk-operations-oncall
+          team: RISK_OPERATIONS
+          slo_class: risk_oms
+          runbook_url: https://runbooks.trade.internal/incident-sev1-response
+        annotations:
+          summary: "Internal risk/OMS error budget exhausted (100%)"
+          description: "The 0.01% monthly internal risk/OMS error budget is fully consumed. 08 §4 requires routine production releases to stop for this SLO class."
+          threshold: "consumed > 100% of the 0.01% monthly budget"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds"
+          action: "Stop routine production releases on the risk/OMS path. Safety invariants are never traded for availability (08 §Measurement boundaries)."

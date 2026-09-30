@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.trade.internal/eligibility.schema.json",
+  "title": "Jurisdiction Eligibility Registry",
+  "description": "Machine-readable model of the positive eligibility registry defined by 18_GOVERNANCE_DATA_AND_COMPLIANCE.md §5 and 23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §5. The registry is a POSITIVE list: a country, market class, instrument, venue, account, and activity are disabled until the required review is complete. Unknown, expired, contradictory, or revoked eligibility records fail closed (18 §5). API availability is not evidence of legal permission (18 §5).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "declared_residence",
+    "account_holder",
+    "legal_entity",
+    "venue",
+    "account_type",
+    "market_class",
+    "instrument",
+    "product",
+    "activity",
+    "api_permission",
+    "effective_date",
+    "expiry",
+    "next_review",
+    "reviewer",
+    "source_authority",
+    "rule_citation",
+    "decision",
+    "restrictions",
+    "evidence_source"
+  ],
+  "properties": {
+    "declared_residence": {
+      "type": "string",
+      "minLength": 2,
+      "description": "The account holder's explicitly DECLARED legal residence. 23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §5: 'The initial review profile is Indonesia, only when explicitly declared.' 18 §5: 'No default jurisdiction is inferred from IP address, device location, language, or account currency.' 23 §5: 'Location signals are never used to infer legal residence.' This value must never be populated from a geolocation or device signal."
+    },
+    "account_holder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account_holder_id",
+        "legal_capacity_confirmed",
+        "age_verified",
+        "age_determined_by",
+        "adult_confirmed",
+        "identity_verified",
+        "account_authority_verified"
+      ],
+      "description": "Account-holder identity and legal capacity. 18 §5.1: the platform 'must refuse live activation for a person who is not legally eligible to hold and operate the relevant account, including applicable minimum-age requirements. It must not support account sharing, false declarations, or bypass of identity/age checks.' 23 §5: 'Live capability is restricted to a legally eligible adult account holder with verified identity and account authority. The system does not support shared credentials, false age/residence declarations, or bypasses.'",
+      "properties": {
+        "account_holder_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable reference to the account holder record. Not a credential."
+        },
+        "legal_capacity_confirmed": {
+          "type": "boolean",
+          "description": "Legal capacity to hold and operate the account was confirmed by a qualified reviewer. 18 §5: the record must cover '(1) legal capacity and account-holder eligibility, including applicable age requirements'."
+        },
+        "age_verified": {
+          "type": "boolean",
+          "description": "Age was verified against an authoritative identity source, not self-declared. 18 §5.1 prohibits false declarations and bypass of identity/age checks."
+        },
+        "age_determined_by": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Source that determined eligibility age, e.g. 'national-id-document', 'qualified-counsel-determination'. 18 §5.1: 'If an applicable law provides a special arrangement, it is not enabled unless counsel documents its applicability and the product explicitly supports the required controls.' An 'operator-assertion' value is a deny condition."
+        },
+        "adult_confirmed": {
+          "type": "boolean",
+          "description": "The account holder is confirmed to be an adult (of age of majority in the declared jurisdiction). 23 §5 requires a 'legally eligible adult account holder'. 12_DECISION_REGISTER.md ADR-024: 'Live capability requires an eligible adult account holder'; 'No guardian or account-sharing workaround'. NOTE: the blueprints deliberately do NOT publish a single numeric minimum age; the applicable minimum age is jurisdiction-specific ('applicable minimum-age requirements', 18 §5.1). This schema therefore records an explicit reviewer determination rather than inventing a universal number. The accompanying live_activation_guard treats any declared age below 18 as ineligible."
+        },
+        "identity_verified": {
+          "type": "boolean",
+          "description": "Identity verified. 11_EXECUTION_GATES.md G11: 'the account holder is legally eligible and identity/account authority is verified'."
+        },
+        "account_authority_verified": {
+          "type": "boolean",
+          "description": "Authority to operate the account is verified. 11_EXECUTION_GATES.md G11 requires 'identity/account authority is verified'."
+        }
+      }
+    },
+    "legal_entity": {
+      "type": "string",
+      "minLength": 2,
+      "description": "The contracting legal entity. 18 §5: 'The owner must declare the account holder's legal residence and contracting entity'. Part of the 23 §5 evaluation tuple."
+    },
+    "venue": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The specific venue. 23 §5: 'API connectivity, provider marketing, or another user's approval is not evidence of eligibility.' 18 §5: the record must cover '(3) venue authorization and terms'."
+    },
+    "account_type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Venue account type. Part of the 23 §5 evaluation tuple; 18 §5 requires '(2) jurisdiction and entity/account status'."
+    },
+    "market_class": {
+      "type": "string",
+      "minLength": 1,
+      "enum": ["crypto", "fx", "equities", "commodities", "derivatives", "margin", "shorting", "cross_border"],
+      "description": "Market class. 18 §5: 'Market access is segmented by asset class and instrument. Equity, derivatives, leveraged products, margin, shorting, and cross-border access are disabled by default and require separate explicit eligibility and risk approvals.' 16_MARKET_DATA_AND_VENUE_ADAPTERS.md §5: 'Crypto, FX, equities, and commodities are independently enabled.'"
+    },
+    "instrument": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The exact instrument or instrument class. 18 §5.1 item (3): 'current instrument eligibility/listing status' for the exact provider and service. 16 §1: venue symbols are never globally unique identifiers."
+    },
+    "product": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The product type. 18 §5: the record must cover '(4) permitted market/instrument and product type'; 18 §5.1 item (5) covers 'product-specific conditions, including any knowledge test, margin, or derivatives restrictions'."
+    },
+    "activity": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The permitted activity, e.g. 'spot-trading', 'perpetual-futures', 'automated-order-submission'. 18 §5 requires the record to cover API access and automation restrictions."
+    },
+    "api_permission": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The specific API permission granted. 18 §5 item (5): 'API access and automation restrictions'. 18 §5.1 item (4) for Indonesia crypto: 'venue API and automation permission'."
+    },
+    "effective_date": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "Date the eligibility takes effect. 23 §5 tuple includes effective_date. 18 §5.1 requires publication date and effective date tracking for regulatory sources."
+    },
+    "expiry": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "Date the eligibility expires. 23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §5: 'Eligibility records expire after at most 30 days unless a stricter interval is required.' 18 §5: 'Unknown, expired, contradictory, or revoked eligibility records fail closed.'"
+    },
+    "next_review": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "Next scheduled review date. 23 §5: 'The system checks current official sources at activation and on the configured monitoring cadence.' 18 §5.1: 'An eligibility record is revalidated at least every 30 days and immediately on a relevant regulatory/provider change.'"
+    },
+    "reviewer": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The responsible reviewer. 23 §5: 'A compliance decision is required for each enabled tuple and records source authority, rule citation, reviewer, decision, restrictions, effective date, expiry, and next review.' 18 §6: 'A qualified reviewer must map the change to account/product/activity scope and approve the resulting policy version.'"
+    },
+    "source_authority": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The official authority whose source was consulted. 18 §6: 'Regulatory source monitoring maintains a versioned register of authority, instrument title/number, official URL, publication date, effective date, superseded provisions, affected product/activity scopes, reviewer, interpretation record, and next review.' For Indonesia digital financial assets/crypto, 18 §5.1 names OJK as the supervising authority."
+    },
+    "rule_citation": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The specific instrument and provision, e.g. 'POJK 27/2024 as amended by POJK 23/2025 (effective 10 November 2025)'. 18 §5.1 requires the rule registry to track 'POJK 27/2024 as amended by POJK 23/2025, and PADK OJK 3/2026 effective 1 September 2026, as well as current official provider and instrument lists.'"
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["APPROVED", "DENIED", "REVOKED", "PENDING", "EXPIRED"],
+      "description": "The recorded decision. 18 §5: 'The platform uses a positive eligibility registry'; a scope is enabled only on APPROVED. UNKNOWN, expired, contradictory, or revoked records fail closed. 23 §5: 'Unknown rules disable the affected scope.'"
+    },
+    "restrictions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Explicit restrictions attached to the approval. 18 §5 item list covers data licensing and redistribution, tax/accounting record obligations, sanctions/restricted-party screening, privacy/data residency, reporting/record-retention, and required advice from qualified local counsel. 23 §5: a decision 'records source authority, rule citation, reviewer, decision, restrictions'."
+    },
+    "evidence_source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Pointer to the evidence supporting the decision, e.g. an official URL and dated capture. 18 §5: 'the platform records the evidence source and review date'; 18 §5.1 requires 'a dated compliance approval' and that the system 'consult current OJK official provider/instrument information at onboarding and before activation; no static provider list is embedded as a permanent approval'."
+    }
+  },
+  "x-blueprint-constraints": {
+    "max_record_age_days": {
+      "value": 30,
+      "citation": "23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §5 ('Eligibility records expire after at most 30 days unless a stricter interval is required') and §6 table ('Eligibility record maximum age | 30 days'); 18_GOVERNANCE_DATA_AND_COMPLIANCE.md §5.1 ('An eligibility record is revalidated at least every 30 days')."
+    },
+    "official_source_refresh_tolerance_hours": {
+      "value": 72,
+      "citation": "23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §6 table ('Official-source refresh failure tolerance | 72 hours, then block affected scope'); 18 §5.1 ('If a source cannot be refreshed within 72 hours, the affected scope is blocked from new risk-increasing activity until refreshed')."
+    },
+    "regulatory_monitoring_cadence": {
+      "value": "daily",
+      "citation": "23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §6 table ('Regulatory monitoring | Daily'); 18 §5.1 ('Regulatory monitoring runs daily against configured official sources')."
+    },
+    "initial_review_profile": {
+      "value": "Indonesia, only when explicitly declared",
+      "citation": "23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §5; 18_GOVERNANCE_DATA_AND_COMPLIANCE.md §5.1; 12_DECISION_REGISTER.md ADR-016. This is a review scope, not a legal approval."
+    },
+    "deny_by_default": {
+      "value": true,
+      "citation": "18 §5 ('A country, market class, instrument, venue, account, and activity are disabled until the required review is complete; API availability is not evidence of legal permission'); 17_CONFIGURATION_AND_RISK_POLICY.md §2 ('No default value may silently imply permission to trade'); 25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md §3 invariant 7."
+    },
+    "fail_closed": {
+      "value": true,
+      "citation": "18 §5 ('Unknown, expired, contradictory, or revoked eligibility records fail closed'); 18 §6 ('If a source is unavailable beyond the configured tolerance, the affected scope is blocked from new risk-increasing activity'); 11_EXECUTION_GATES.md G11 ('Failure of any condition leaves live mode disabled')."
+    }
+  }
+}

@@ -1,0 +1,140 @@
+{
+  "$schema": "https://slsa.dev/provenance/v1",
+  "$id": "https://schemas.trade.internal/sbom-provenance.schema.json",
+  "title": "Release Artifact SBOM and SLSA-style Provenance Generation Definition",
+  "description": "Generation definition for the SBOM and provenance attestation required of every release artifact. This document defines WHAT must be produced; the build workflow that produces it is infra/ci/sbom-provenance.yml.",
+  "x-blueprint-constraints": {
+    "sbom_required": {
+      "value": true,
+      "citation": "24_ENTERPRISE_RELEASE_STANDARD.md §2 supply-chain security: 'Lockfiles, SBOM, provenance, signed images, SAST/SCA/container scanning, protected artifact registry | Release is blocked on defined critical findings or missing provenance.' 02_POLYGLOT_ENGINEERING_STANDARD.md §10: 'Every artifact is built from a locked dependency graph and emits an SBOM, provenance statement, source revision, compiler/runtime identity, configuration schema version, and reproducible artifact digest.' 25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md §8 item 1 lists SBOM and provenance in the release evidence package."
+    },
+    "provenance_required": {
+      "value": true,
+      "citation": "06_SECURITY_AND_ACCESS_CONTROL.md §7 mandatory controls include 'SBOM; signed build provenance; ... artifact digest verification'. 23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §2: 'Terraform-managed, immutable OCI images, signed release artifacts'."
+    },
+    "signature_required": {
+      "value": true,
+      "citation": "24_ENTERPRISE_RELEASE_STANDARD.md §16 prohibits 'unsigned production artifacts' in the production baseline. 06_SECURITY_AND_ACCESS_CONTROL.md §6: 'rotate signing keys at least annually and after compromise, with overlapping verification keys during planned rotation.'"
+    },
+    "reproducibility_required": {
+      "value": true,
+      "citation": "02_POLYGLOT_ENGINEERING_STANDARD.md §10: artifacts must have a 'reproducible artifact digest'. 13_IMPLEMENTATION_HANDOFF.md: 'the production release can be reproduced from immutable source and artifact digests.'"
+    },
+    "no_rebuild_between_environments": {
+      "value": true,
+      "citation": "24_ENTERPRISE_RELEASE_STANDARD.md §15: 'The release candidate is promoted through validation environments without rebuilding from source between environments.' 09_TESTING_AND_RELEASE_EVIDENCE.md §Release strategy: promotion dev -> test -> staging -> paper -> shadow -> live."
+    },
+    "digest_pinned_no_latest": {
+      "value": true,
+      "citation": "23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §2: immutable OCI images. 25 §8 item 1 records the artifact digest. Mutable tags and :latest are deny conditions."
+    }
+  },
+  "sbom": {
+    "format": "SPDX 3.0 JSON or CycloneDX 1.6 JSON",
+    "minimum_required": true,
+    "required_component_fields": [
+      "name",
+      "version",
+      "purl",
+      "license",
+      "supplier",
+      "external_references"
+    ],
+    "must_cover": [
+      "OS base image and its packages",
+      "language runtime and standard library",
+      "all direct and transitive dependencies from the committed lockfile",
+      "native/shared libraries loaded at runtime"
+    ],
+    "must_not_include": [
+      "credentials",
+      "tokens",
+      "private keys"
+    ],
+    "unmaintained_dependency_rule": {
+      "value": "block promotion",
+      "citation": "18_GOVERNANCE_DATA_AND_COMPLIANCE.md §6: 'Unmaintained or critical-vulnerability dependencies cannot be promoted without remediation or an approved, time-bounded compensating control.' 24_ENTERPRISE_RELEASE_STANDARD.md §4: 'Unsupported dependencies are prohibited in production.'"
+    },
+    "critical_vulnerability_rule": {
+      "value": "block promotion",
+      "citation": "24_ENTERPRISE_RELEASE_STANDARD.md §2: 'Release is blocked on defined critical findings or missing provenance.' 06_SECURITY_AND_ACCESS_CONTROL.md §7: 'Critical vulnerability remediation target is 24 hours for exploitable internet-facing components and 7 days for other production components.'"
+    },
+    "end_of_life_runtime_rule": {
+      "value": "block promotion",
+      "citation": "23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §7: 'End-of-life runtimes are prohibited.' 00_README.md §Toolchain lifecycle: 'Unsupported or end-of-life versions are prohibited.'"
+    }
+  },
+  "provenance": {
+    "slsa_level": "SLSA Build L3 (build provenance is non-falsifiable and independently verifiable)",
+    "attestation_type": "in-toto Statement v1",
+    "predicate_type": "https://slsa.dev/provenance/v1",
+    "required_predicates": {
+      "buildDefinition": {
+        "required_fields": [
+          "buildType",
+          "externalParameters.source.uri",
+          "externalParameters.source.digest",
+          "internalParameters.buildPlatform",
+          "resolvedDependencies"
+        ],
+        "citation": "SLSA Build provenance: records the source, the build platform, and the fully resolved dependency set."
+      },
+      "runDetails": {
+        "required_fields": [
+          "builder.id",
+          "metadata.invocationId",
+          "metadata.completionTimestamp",
+          "byproducts"
+        ],
+        "citation": "SLSA Build provenance: identifies the builder and the invocation."
+      }
+    },
+    "must_record": {
+      "source_revision": "25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md §8 item 1: 'Source commit'.",
+      "build_identity": "25 §8 item 1: 'build identity'.",
+      "toolchain_versions": "25 §8 item 1: 'toolchain versions'; 23 §7: versions are 'pinned exactly, and recorded in release evidence'.",
+      "configuration_schema_version": "02_POLYGLOT_ENGINEERING_STANDARD.md §10 requires a 'configuration schema version' on every artifact.",
+      "builder_identity": "24_ENTERPRISE_RELEASE_STANDARD.md §2 requires a 'protected artifact registry'; only the protected build identity may publish to the environment registry."
+    },
+    "material_parameters": [
+      "source repository URI and commit digest",
+      "build platform identifier (image, toolchain, compiler/runtime versions)",
+      "build invocation identifier and timestamp",
+      "dependency lockfile digests",
+      "configuration schema version",
+      "SBOM digest"
+    ],
+    "must_not_contain": [
+      "build secrets",
+      "service-account keys",
+      "credentials of any kind"
+    ],
+    "secret_justification": "06_SECURITY_AND_ACCESS_CONTROL.md §6: 'Secrets, authentication factors, private keys, and raw access tokens never enter source, logs, prompts, analytics, test fixtures, or client bundles.'"
+  },
+  "artifact_identity": {
+    "image_reference_form": "registry/repository@sha256:<64 hex>",
+    "mutable_tag_permitted": false,
+    "latest_tag_permitted": false,
+    "registry_immutability": "tags are write-once; a tag that exists cannot be overwritten",
+    "digest_recorded_on_workload": true,
+    "citation": "24_ENTERPRISE_RELEASE_STANDARD.md §15: 'Production releases use immutable artifacts and progressive deployment'; 23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §2: 'immutable OCI images, signed release artifacts'; 06_SECURITY_AND_ACCESS_CONTROL.md §7: 'artifact digest verification'."
+  },
+  "signing": {
+    "key_type": "asymmetric, KMS/HSM-backed, non-exportable where supported",
+    "rotation_citation": "06_SECURITY_AND_ACCESS_CONTROL.md §6: 'rotate signing keys at least annually and after compromise, with overlapping verification keys during planned rotation.'",
+    "checkpoint_citation": "23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §6: 'Audit checkpoint | Daily and on key rotation / high-impact security event.' Every key rotation therefore produces a signed audit checkpoint.",
+    "overlapping_verification": true
+  },
+  "promotion_gates": {
+    "required_before_promotion": [
+      "SBOM generated and stored immutably",
+      "provenance attestation generated, signed, and verified",
+      "artifact digest recorded and digest-pinned in the deployment manifest",
+      "no unresolved critical or high vulnerability finding without an approved time-bounded compensating control",
+      "toolchain versions match the pinned versions (no drift)",
+      "lockfile digest matches the committed lockfile"
+    ],
+    "fail_closed": true,
+    "citation": "23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §7: 'CI rejects floating dependencies and toolchain drift.' 24_ENTERPRISE_RELEASE_STANDARD.md §2: 'Release is blocked on defined critical findings or missing provenance.' 02_POLYGLOT_ENGINEERING_STANDARD.md: 'CI rejects floating dependency versions, uncommitted lockfile changes, and toolchain drift.'"
+  }
+}

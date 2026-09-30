@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aitc.internal/contracts/1.0.0/common.schema.json",
+  "title": "AITC Canonical Contracts v1.0.0",
+  "description": "Language-neutral canonical contracts (03_CANONICAL_CONTRACTS.md). This schema is the authoritative source from which the Go, TypeScript and Python representations are generated or validated. No component may redefine these structures independently (25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md section 4).",
+  "$defs": {
+    "entityType": {
+      "type": "string",
+      "description": "Closed set of canonical identifier prefixes. An unknown value is unsupported and must never be silently mapped. This set is kept identical to contracts.EntityTypes() by TestSchemaFileDeclaresSameVocabulariesAsGo; a prefix listed here with no Go counterpart mints identifiers that ParseID rejects.",
+      "enum": [
+        "acc", "agt", "apr", "art", "aud", "cfg", "cmd", "dqt", "dst",
+        "elg", "evt", "exp", "fil", "flt", "hlt", "inc", "ins", "led", "mkt",
+        "mdl", "ord", "pol", "pos", "rec", "rsk", "run", "ses", "str", "ven"
+      ]
+    },
+    "canonicalId": {
+      "type": "string",
+      "description": "Typed prefix + '_' + 20 lowercase Crockford Base32 characters (100 bits of entropy). Crockford Base32 excludes i, l, o and u on encoding.",
+      "pattern": "^[a-z]{3}_[0-9abcdefghjkmnpqrstvwxyz]{20}$",
+      "minLength": 24,
+      "maxLength": 24
+    },
+    "decimal": {
+      "type": "string",
+      "description": "Strict base-10 decimal literal. Exponents, whitespace, thousands separators, hex and non-finite values are rejected. Trailing fractional zeros are significant scale metadata and are preserved.",
+      "pattern": "^[+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)$",
+      "minLength": 1,
+      "maxLength": 60
+    },
+    "money": {
+      "type": "object",
+      "description": "Canonical monetary value. The amount is a JSON string so that no JSON decoder can introduce a float into an authoritative financial value.",
+      "required": ["currency", "amount"],
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "type": "string",
+          "description": "ISO 4217 alphabetic code, or an explicitly configured digital-asset code. A well-formed code is NOT evidence of eligibility for any account, venue or jurisdiction.",
+          "pattern": "^[A-Z0-9_]{3,12}$"
+        },
+        "amount": { "$ref": "#/$defs/decimal" }
+      }
+    },
+    "quantity": { "$ref": "#/$defs/decimal" },
+    "price": { "$ref": "#/$defs/decimal" },
+    "timestamp": {
+      "type": "string",
+      "description": "UTC RFC 3339 with nanosecond precision. A non-UTC offset is accepted on parse and normalised to UTC; the canonical stored and transmitted form is always UTC with a literal Z.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{9}Z$"
+    },
+    "traceId": {
+      "type": "string",
+      "description": "Bounded printable identifier recorded in audit records. Length and character restrictions prevent log injection and unbounded audit growth.",
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+    },
+    "environment": {
+      "type": "string",
+      "description": "Deployment scope. Each environment has separate credentials, database, keys, deployment identity, network policy and configuration namespace.",
+      "enum": ["dev", "test", "staging", "paper", "shadow", "live"]
+    },
+    "environmentOrder": {
+      "description": "Promotion ladder. Promotion is monotonic; backward movement requires an explicit audited rollback record.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/environment" },
+      "const": ["dev", "test", "staging", "paper", "shadow", "live"]
+    },
+    "actorType": {
+      "type": "string",
+      "description": "Human, workload, system, agent or break-glass. A workload can never impersonate a human.",
+      "enum": ["HUMAN", "WORKLOAD", "SYSTEM", "AGENT", "BREAK_GLASS"]
+    },
+    "authStrength": {
+      "type": "string",
+      "description": "Phishing-resistant assurance (FIDO2/WebAuthn) is required for privileged roles and every step-up-gated action.",
+      "enum": ["NONE", "PASSWORD", "MFA", "PHISHING_RESISTANT"]
+    },
+    "marketClass": {
+      "type": "string",
+      "description": "Independently enabled market scope. Enabling one never implies another.",
+      "enum": ["crypto", "fx", "equities", "commodities", "derivatives"]
+    },
+    "tradingStatus": {
+      "type": "string",
+      "description": "UNKNOWN is not tradable: an unverifiable status fails closed.",
+      "enum": [
+        "OPEN", "CLOSED", "HALTED", "AUCTION", "SESSION_BREAK",
+        "PRE_OPEN", "POST_CLOSE", "DELISTED", "UNKNOWN"
+      ]
+    },
+    "side": { "type": "string", "enum": ["BUY", "SELL"] },
+    "orderType": {
+      "type": "string",
+      "enum": [
+        "MARKET", "LIMIT", "STOP", "STOP_LIMIT", "POST_ONLY",
+        "IOC", "FOK", "REDUCE_ONLY", "CLOSE_POSITION"
+      ]
+    },
+    "timeInForce": {
+      "type": "string",
+      "enum": ["GTC", "DAY", "IOC", "FOK", "GTX"]
+    },
+    "schemaVersion": {
+      "type": "string",
+      "description": "Contract version. An unsupported version is rejected, never silently mapped.",
+      "enum": ["1.0.0"]
+    },
+    "errorCode": {
+      "type": "string",
+      "description": "Closed canonical error taxonomy.",
+      "enum": [
+        "VALIDATION_ERROR", "AUTHENTICATION_ERROR", "AUTHORIZATION_ERROR",
+        "CONFLICT", "RISK_REJECTED", "RATE_LIMITED",
+        "DEPENDENCY_UNAVAILABLE", "TIMEOUT_UNKNOWN", "DATA_STALE",
+        "RECONCILIATION_REQUIRED", "INTERNAL_ERROR"
+      ]
+    },
+    "errorBody": {
+      "type": "object",
+      "description": "Canonical error body. Internal causes are never serialised; hostnames, addresses, SQL and vendor error text must not appear here.",
+      "required": ["error_code", "message", "correlation_id"],
+      "additionalProperties": false,
+      "properties": {
+        "error_code": { "$ref": "#/$defs/errorCode" },
+        "message": { "type": "string", "maxLength": 512 },
+        "correlation_id": { "$ref": "#/$defs/traceId" },
+        "details": {
+          "type": "object",
+          "description": "Client-safe structured details only.",
+          "additionalProperties": { "type": "string" }
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "Advisory only. It never authorises a blind retry of a financial command; TIMEOUT_UNKNOWN is never retryable."
+        }
+      }
+    },
+    "commandStatus": {
+      "type": "string",
+      "description": "'accepted' means durably accepted, NOT that a venue accepted, filled or acknowledged anything. 'outcome_unknown' means the client must query canonical state and must not retry with a new idempotency key.",
+      "enum": ["accepted", "rejected", "outcome_unknown"]
+    },
+    "commandEnvelope": {
+      "type": "object",
+      "description": "Canonical wrapper for every externally initiated mutating request. Unknown request fields are rejected on commands (15_API_AND_INTEGRATION_CONTRACTS.md section 1).",
+      "required": [
+        "command_id", "command_type", "schema_version", "correlation_id",
+        "causation_id", "actor_id", "actor_type", "environment",
+        "requested_at", "idempotency_key", "payload"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "command_id": {
+          "allOf": [{ "$ref": "#/$defs/canonicalId" }],
+          "pattern": "^cmd_[0-9abcdefghjkmnpqrstvwxyz]{20}$"
+        },
+        "command_type": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "correlation_id": { "$ref": "#/$defs/traceId" },
+        "causation_id": {
+          "allOf": [{ "$ref": "#/$defs/traceId" }],
+          "description": "Absent only for a top-level externally initiated command."
+        },
+        "actor_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "actor_type": { "$ref": "#/$defs/actorType" },
+        "environment": { "$ref": "#/$defs/environment" },
+        "requested_at": { "$ref": "#/$defs/timestamp" },
+        "idempotency_key": {
+          "type": "string",
+          "description": "Scoped to actor + endpoint + environment. Reuse with a different request body is a CONFLICT, not a silent replay.",
+          "pattern": "^[A-Za-z0-9._:\\-]{8,128}$"
+        },
+        "payload": {
+          "type": "object",
+          "description": "Command-specific body. Maximum 65536 bytes."
+        }
+      }
+    },
+    "eventEnvelope": {
+      "type": "object",
+      "description": "Canonical wrapper for every durable domain event. Unknown fields are tolerated on events (additive-compatible).",
+      "required": [
+        "event_id", "event_type", "schema_version", "aggregate_type",
+        "aggregate_id", "correlation_id", "causation_id", "producer_id",
+        "occurred_at", "recorded_at", "sequence", "payload"
+      ],
+      "properties": {
+        "event_id": {
+          "allOf": [{ "$ref": "#/$defs/canonicalId" }],
+          "pattern": "^evt_[0-9abcdefghjkmnpqrstvwxyz]{20}$"
+        },
+        "event_type": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "aggregate_type": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "aggregate_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "correlation_id": { "$ref": "#/$defs/traceId" },
+        "causation_id": { "$ref": "#/$defs/traceId" },
+        "producer_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "occurred_at": { "$ref": "#/$defs/timestamp" },
+        "recorded_at": { "$ref": "#/$defs/timestamp" },
+        "source_timestamp": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Present when the event originates from an external venue or provider. Mandatory for market data."
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Monotonic within the aggregate. A missing or non-positive sequence is routed to controlled reconciliation rather than accepted.",
+          "minimum": 1
+        },
+        "payload": { "type": "object" }
+      }
+    },
+    "idempotencyRecord": {
+      "type": "object",
+      "description": "Durable replay-suppression record enforced by a unique constraint. Application memory is never sufficient.",
+      "required": ["scope_hash", "state", "request_digest", "command_id", "created_at", "updated_at"],
+      "properties": {
+        "scope_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "state": {
+          "type": "string",
+          "enum": ["in_flight", "succeeded", "failed", "unknown"],
+          "description": "'unknown' records an unprovable downstream outcome. A replay returns outcome_unknown and must NOT re-execute."
+        },
+        "request_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "response_status": { "type": "integer" },
+        "response_body": { "type": "string" },
+        "command_id": {
+          "allOf": [{ "$ref": "#/$defs/canonicalId" }],
+          "pattern": "^cmd_[0-9abcdefghjkmnpqrstvwxyz]{20}$"
+        },
+        "created_at": { "$ref": "#/$defs/timestamp" },
+        "updated_at": { "$ref": "#/$defs/timestamp" }
+      }
+    }
+  }
+}

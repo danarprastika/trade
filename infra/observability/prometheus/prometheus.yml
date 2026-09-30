@@ -1,0 +1,118 @@
+# Prometheus-compatible scrape configuration.
+#
+# 08_NFR_OBSERVABILITY_AND_CAPACITY.md §Availability targets and measurement:
+# "The external synthetic probe runs at least once per minute from two independent
+# locations; if either probe fails, the interval is unavailable unless the probe
+# itself is independently proven faulty."
+#
+# That per-minute, two-location requirement is expressed below as scrape_interval:
+# 60s on both the internal-synthetic and external-synthetic jobs.
+
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  evaluation_interval: 30s
+  external_labels:
+    monitor: prometheus-compatible
+    authority: "operational-evidence-only"
+    # 01_SYSTEM_ARCHITECTURE.md §7: "Operations | deployment/recovery/health state |
+    # financial authorization" is prohibited. This label records that these
+    # signals carry no financial authority.
+    financial_authority: "none"
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # 08 §Availability targets: availability is measured "from externally probed
+  # synthetic transactions and server-side successful eligible requests", and
+  # client 4xx responses are excluded while 5xx/timeout/readiness count.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  - job_name: control-plane
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [trading-live, trading-paper, trading-shadow, trading-staging, trading-test, trading-dev]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        target_label: app
+      - source_labels: [__meta_kubernetes_pod_label_environment]
+        target_label: environment
+      - source_labels: [__meta_kubernetes_pod_label_venue]
+        target_label: venue
+      - source_labels: [__meta_kubernetes_pod_label_market]
+        target_label: market_class
+      # 08 §Observability: dashboards segment by market, venue, and environment.
+      - source_labels: [__meta_kubernetes_pod_label_service_class]
+        target_label: service_class
+
+  - job_name: event-dispatcher
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [trading-live, trading-paper, trading-shadow, trading-staging, trading-test, trading-dev]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        target_label: app
+      - source_labels: [__meta_kubernetes_pod_label_environment]
+        target_label: environment
+
+  - job_name: venue-adapters
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [trading-live, trading-paper, trading-shadow]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        target_label: app
+      - source_labels: [__meta_kubernetes_pod_label_venue]
+        target_label: venue
+      - source_labels: [__meta_kubernetes_pod_label_environment]
+        target_label: environment
+
+  # 08 §Availability targets: internal service health is "measured using
+  # dependency-aware synthetic command flows, not process uptime alone".
+  - job_name: internal-synthetic
+    scrape_interval: 60s # "The external synthetic probe runs at least once per minute"
+    static_configs:
+      - targets: ["synthetic-probe-a.trade.internal:9110"]
+        labels:
+          probe_location: "region-a"
+      - targets: ["synthetic-probe-b.trade.internal:9110"]
+        labels:
+          probe_location: "region-b"
+
+  - job_name: external-synthetic
+    scrape_interval: 60s # "at least once per minute from two independent locations"
+    static_configs:
+      - targets: ["synthetic-ext-1.example:9110"]
+        labels:
+          probe_location: "external-1"
+      - targets: ["synthetic-ext-2.example:9110"]
+        labels:
+          probe_location: "external-2"
+
+  # 19_DEPLOYMENT_TOPOLOGY_AND_SIZING.md §3: "PostgreSQL CPU, memory, IOPS,
+  # connection count, WAL throughput, queue lag, and storage growth must be
+  # measured under the stated envelope before live activation."
+  - job_name: postgresql
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+        labels:
+          component: authoritative-database
+
+  # 25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md §5 Resilience:
+  # capacity and recovery evidence requires queue and WAL observation.
+  - job_name: node-exporter
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_node_label_topology_kubernetes_io_zone]
+        target_label: zone

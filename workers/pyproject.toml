@@ -1,0 +1,43 @@
+[project]
+name = "aitc-workers"
+version = "0.1.0"
+description = "AI Trading Company research and backtest workers"
+readme = "README.md"
+requires-python = "==3.14.6"
+dependencies = [
+    # stdlib-only for core contracts; pinned deps only for test/runtime convenience
+    "pytest==8.3.4",
+    "pytest-cov==6.0.0",
+    "httpx==0.28.1",  # for registry client HTTPS calls only
+    "pydantic==2.10.6",  # for schema validation in registry/artifact
+    "cryptography==44.0.1",  # for artifact signing/verification if needed
+]
+# No optional dependencies; keep supply-chain surface minimal
+
+[build-system]
+requires = ["setuptools>=80.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-q --strict-markers --strict-config"
+markers = [
+    "contract: cross-language contract conformance tests",
+    "determinism: bit-for-bit determinism tests",
+    "security: security boundary tests (no secrets, no network, no DB)",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["research*", "backtest*"]
+
+# Pin exact versions for reproducible builds (supply-chain security)
+# All dependencies justified:
+# - pytest: test runner, required for verification
+# - pytest-cov: coverage reporting for gate evidence
+# - httpx: ONLY for registry client HTTPS proposals to Go control plane (no venue APIs)
+# - pydantic: schema validation for artifact manifests and registry proposals
+# - cryptography: artifact digest/signature verification (stdlib hashlib insufficient for some curves)

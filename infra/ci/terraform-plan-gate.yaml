@@ -1,0 +1,203 @@
+# terraform plan-based CI gate and drift detection.
+#
+# TRACEABILITY
+#   23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §2: "Drift is detected; production
+#     changes require reviewed plan and release evidence."
+#   24_ENTERPRISE_RELEASE_STANDARD.md §5: "Drift detection compares desired and
+#     observed state continuously; unexplained drift creates an operational incident
+#     and blocks further privileged changes until resolved."
+#   25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md §5:
+#     "Configuration governance | Typed schema, signed immutable release snapshot,
+#     reviewable diff, drift detection, safe feature flags | Invalid/stale/unsigned
+#     config rejection; drift alert test."
+#   23 §7: "CI rejects floating dependencies and toolchain drift."
+#   09_TESTING_AND_RELEASE_EVIDENCE.md §CI gates: "Every merge: formatting, lint,
+#     unit tests, contract validation, SAST, dependency scan. Protected branches
+#     additionally require integration tests and artifact build. Release candidates
+#     require end-e2e, performance, fault injection, migration rehearsal, backup
+#     restore verification, SBOM generation, provenance signing, and security
+#     approval."
+#
+# PREREQUISITE (EXTERNAL, NOT SATISFIED IN THIS REPOSITORY):
+#   Running this workflow requires: (a) a Terraform 1.9.8 binary, (b) network
+#   access to the provider registry and the cloud APIs, (c) per-environment
+#   credentials. NONE of these are available in the repository build environment,
+#   so `terraform init/validate/plan` has NOT been executed against this code.
+
+name: terraform-plan-gate
+
+on:
+  pull_request:
+    paths:
+      - "infra/terraform/**"
+  schedule:
+    # Drift is detected continuously. 24 §5: "Drift detection compares desired and
+    # observed state continuously." Hourly is the engineering cadence; the SLO for
+    # drift detection is that an unexplained change is found before it becomes a
+    # privileged-change blocker.
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to plan"
+        required: true
+        type: choice
+        options: [dev, test, staging, paper, shadow, live]
+
+permissions:
+  contents: read
+  id-token: write # workload identity federation; 06_SECURITY_AND_ACCESS_CONTROL.md §4
+  pull-requests: write
+
+env:
+  TERRAFORM_VERSION: "1.9.8" # pinned; matches infra/terraform/.terraform-version
+
+jobs:
+  terraform-fmt:
+    name: terraform fmt (exact pin enforcement)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: "terraform fmt -check -recursive"
+        run: terraform fmt -check -recursive infra/terraform
+      - name: "Assert no floating provider versions"
+        # 23 §7: "CI rejects floating dependencies and toolchain drift."
+        # infra/tests/test_terraform_invariants.py enforces the same rule on every
+        # required_providers block.
+        run: python -m unittest discover -s infra -p "test_terraform_invariants.py" -v
+
+  terraform-validate:
+    name: terraform validate (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    needs: terraform-fmt
+    strategy:
+      fail-fast: false
+      matrix:
+        # All six environments from 01_SYSTEM_ARCHITECTURE.md §4. Each is a
+        # separate root module with a separate state backend (19 §2).
+        environment: [dev, test, staging, paper, shadow, live]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: "terraform fmt -check"
+        working-directory: infra/terraform/environments/${{ matrix.environment }}
+        run: terraform fmt -check
+      - name: "terraform init (separate backend per environment)"
+        working-directory: infra/terraform/environments/${{ matrix.environment }}
+        env:
+          TF_IN_AUTOMATION: "true"
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets[format('{0}_TFSTATE_BUCKET', matrix.environment)] }}" \
+            -backend-config="prefix=environments/${{ matrix.environment }}"
+      - name: "terraform validate"
+        working-directory: infra/terraform/environments/${{ matrix.environment }}
+        # For `live`, validate runs with NO G11 evidence supplied, so the live gate
+        # preconditions are expected to fail the plan. Validate checks syntax and
+        # provider schema only; the gate is enforced in the `live-plan` job.
+        run: terraform validate
+
+  live-plan-gate:
+    name: LIVE plan gate (G11 evidence required)
+    runs-on: ubuntu-latest
+    needs: terraform-validate
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: "Plan live WITHOUT G11 evidence (must be denied)"
+        working-directory: infra/terraform/environments/live
+        env:
+          TF_IN_AUTOMATION: "true"
+        run: |
+          terraform init -backend=false
+          # 11_EXECUTION_GATES.md G11: "Failure of any condition leaves live mode
+          # disabled." A plan that SUCCEEDS here would mean the gate is not
+          # enforced, which is itself a release-blocking defect.
+          if terraform plan -input=false -lock=false -no-color > plan-without-evidence.txt 2>&1; then
+            echo "::error::live planned successfully with no G11 evidence. The live gate is not enforced."
+            exit 1
+          fi
+          cat plan-without-evidence.txt
+      - name: "Plan live WITH G11 evidence (must succeed)"
+        working-directory: infra/terraform/environments/live
+        env:
+          TF_IN_AUTOMATION: "true"
+          TF_VAR_g10_gate_report: ${{ secrets.LIVE_G10_GATE_REPORT }}
+          TF_VAR_account_holder: ${{ secrets.LIVE_ACCOUNT_HOLDER }}
+          TF_VAR_eligibility_record: ${{ secrets.LIVE_ELIGIBILITY_RECORD }}
+          TF_VAR_dual_control: ${{ secrets.LIVE_DUAL_CONTROL }}
+          TF_VAR_operational_state: ${{ secrets.LIVE_OPERATIONAL_STATE }}
+          TF_VAR_live_credentials: ${{ secrets.LIVE_CREDENTIALS_POSTURE }}
+          TF_VAR_owner_authorization: ${{ secrets.LIVE_OWNER_AUTHORIZATION }}
+          TF_VAR_canary: ${{ secrets.LIVE_CANARY }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.LIVE_TFSTATE_BUCKET }}" \
+            -backend-config="prefix=environments/live"
+          terraform plan -input=false -lock=false -no-color -out=tfplan.binary
+          terraform show -no-color tfplan.binary > live-plan.txt
+      - name: "Publish reviewed plan for approval"
+        # 23 §2: "production changes require reviewed plan and release evidence."
+        # 24_ENTERPRISE_RELEASE_STANDARD.md §2: production configuration changes
+        # require "diff review". The plan is attached so a human reviewer approves
+        # the exact diff; an automated job may not approve it.
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-plan
+          path: infra/terraform/environments/live/live-plan.txt
+
+  drift-detection:
+    name: Drift detection (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    needs: terraform-validate
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, test, staging, paper, shadow]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: "Scheduled terraform plan (drift)"
+        working-directory: infra/terraform/environments/${{ matrix.environment }}
+        env:
+          TF_IN_AUTOMATION: "true"
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets[format('{0}_TFSTATE_BUCKET', matrix.environment)] }}" \
+            -backend-config="prefix=environments/${{ matrix.environment }}"
+          terraform plan -input=false -lock=false -detailed-exitcode -no-color -out=drift.tfplan > plan.txt || exitcode=$?
+          cat plan.txt
+          if [ "${exitcode:-0}" -eq 2 ]; then
+            echo "::error::Drift detected in ${{ matrix.environment }}. 24_ENTERPRISE_RELEASE_STANDARD.md §5: unexplained drift creates an operational incident and blocks further privileged changes until resolved."
+            exit 2
+          fi
+          exit "${exitcode:-0}"
+
+  infrastructure-invariant-tests:
+    name: Infrastructure invariant tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.6" # pinned; matches the guard's declared runtime
+      - name: "Run infra test suite"
+        run: python -m unittest discover -s infra -p "test_*.py" -v
+      - name: "Live activation guard fail-closed tests"
+        # 11_EXECUTION_GATES.md G11: "This gate is not satisfied by documentation
+        # alone." The guard tests prove the gate denies by construction.
+        run: python -m unittest infra.tests.test_live_activation_guard -v

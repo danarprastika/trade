@@ -1,0 +1,162 @@
+# OpenTelemetry Collector configuration.
+#
+# TRACEABILITY
+#   19_DEPLOYMENT_TOPOLOGY_AND_SIZING.md §1: "Telemetry is exported through
+#     OpenTelemetry collectors to metrics, logs, and traces backends."
+#   08_NFR_OBSERVABILITY_AND_CAPACITY.md §Observability: "Every request and event
+#     carries correlation and causation identifiers. Metrics include request rate,
+#     error rate, latency, risk rejects, order states, venue acknowledgements,
+#     reconciliation breaks, data freshness, queue depth and oldest-message age,
+#     database health, resource saturation, and model health. Dashboards show SLO
+#     burn rate, error budget remaining, market/venue/environment segmentation, and
+#     deployment annotations. Logs are structured, redact secrets and sensitive
+#     account data, and preserve command/event identifiers."
+#   08 §Observability: "Alerts must have an owner, severity, runbook, and
+#     actionable threshold; alerts without a response action are not production
+#     alerts."
+#   25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md §5
+#   Observability: "Correlated traces, metrics, structured logs, alert ownership,
+#     SLO/error budget, audit-safe redaction" with release evidence "Alert
+#     simulation, dashboard review, sensitive-data scan".
+#   06_SECURITY_AND_ACCESS_CONTROL.md §6: "Redact sensitive fields at ingestion, not
+#     only at dashboard display."
+#   18_GOVERNANCE_DATA_AND_COMPLIANCE.md §3: "Restricted data is excluded from
+#     logs, prompts, client bundles, and general analytics."
+#   01_SYSTEM_ARCHITECTURE.md §10 invariant 8: "No telemetry pipeline outage may
+#     disable preservation of mandatory security and financial evidence." The
+#     `file` exporter is therefore a durable local fallback, and audit records are
+#     written transactionally in PostgreSQL, not through this pipeline.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 4
+      http:
+        endpoint: 0.0.0.0:4318
+
+  prometheus:
+    config:
+      scrape_configs_file: /etc/otel/observability/prometheus/prometheus.yml
+
+processors:
+  # 01_SYSTEM_ARCHITECTURE.md §1: "Every request and event carries correlation and
+  # causation identifiers." 03_CANONICAL_CONTRACTS.md: command envelope requires
+  # correlation_id and causation_id; event envelope likewise.
+  correlation:
+    timeout: 5s
+    header_configs:
+      - header: x-correlation-id
+      - header: x-causation-id
+      - header: traceparent
+
+  # 08 §Observability: percentile latency reported by endpoint class, environment,
+  # and region, over rolling five-minute windows.
+  transform/metric_window:
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(attributes["window"], "5m")
+
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+
+  # REDACTION AT INGESTION. 06_SECURITY_AND_ACCESS_CONTROL.md §6: "Redact
+  # sensitive fields at ingestion, not only at dashboard display."
+  # 18 §3: "Restricted data is excluded from logs, prompts, client bundles, and
+  # general analytics." Restricted = credentials, signing/recovery secrets,
+  # authentication factors, regulated personal data.
+  attributes/redact:
+    actions:
+      - key: http.request.header.authorization
+        action: delete
+      - key: http.request.header.cookie
+        action: delete
+      - key: http.request.header.set_cookie
+        action: delete
+      - key: http.response.header.set_cookie
+        action: delete
+      - key: db.statement
+        action: delete
+      - key: api_key
+        action: delete
+      - key: venue.api_key
+        action: delete
+      - key: venue.api_secret
+        action: delete
+      - key: account.number
+        action: hash
+      - key: enduser.id
+        action: hash
+      - key: client.address
+        action: hash
+
+  # 19_DEPLOYMENT_TOPOLOGY_AND_SIZING.md §1: "Separate deployments do not imply
+  # separate policy authority." Environment is a segment, not an authority.
+  resource/environment:
+    attributes:
+      - key: deployment.environment
+        value: ${env:DEPLOYMENT_ENVIRONMENT}
+        action: upsert
+
+  resource/criticality:
+    attributes:
+      # Control-plane vs internal risk/OMS path. 08 §Availability targets: control
+      # plane 99.95% monthly; internal critical risk/OMS service health 99.99%.
+      - key: slo.class
+        value: risk_oms
+        action: insert
+        if: attributes["service.class"] == "risk_oms"
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+    send_timestamps: true
+
+  otlphttp/traces:
+    endpoint: ${env:TRACES_ENDPOINT}
+
+  otlphttp/logs:
+    endpoint: ${env:LOGS_ENDPOINT}
+
+  # Durable local fallback so a telemetry backend outage cannot lose mandatory
+  # security/financial evidence.
+  # 01_SYSTEM_ARCHITECTURE.md §10 invariant 8.
+  file/telemetry_fallback:
+    path: /var/log/trade-telemetry/fallback.jsonl
+    rotation:
+      max_megabytes: 256
+      max_backups: 30 # 05 §Data retention: operational logs 365 days archived
+      max_days: 90    # 05 §Data retention: operational logs 90 days hot
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 127.0.0.1:1777
+  file_storage:
+    directory: /var/lib/otelcol
+    timeout: 1s
+
+service:
+  extensions: [health_check, pprof, file_storage]
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [correlation, resource/environment, attributes/redact, transform/metric_window, batch]
+      exporters: [prometheus, file/telemetry_fallback]
+    traces:
+      receivers: [otlp]
+      processors: [correlation, resource/environment, attributes/redact, batch]
+      exporters: [otlphttp/traces, file/telemetry_fallback]
+    logs:
+      receivers: [otlp]
+      processors: [correlation, resource/environment, attributes/redact, batch]
+      exporters: [otlphttp/logs, file/telemetry_fallback]

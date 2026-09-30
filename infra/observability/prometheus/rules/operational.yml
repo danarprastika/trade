@@ -1,0 +1,304 @@
+# Operational alert rules: dispatch lag, market data, database, reconciliation,
+# capacity, backup, drift, and recovery posture.
+#
+# 08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds:
+# "Page the on-call operator when any of these conditions persists for two minutes:
+# control-plane error rate >2% over five minutes; risk/OMS error rate >0.5% over
+# five minutes; p95 latency >2x target for five minutes; event dispatch oldest-
+# record age >30 seconds; required market-data freshness limit breached; database
+# primary unavailable; or a material reconciliation break remains unresolved."
+#
+# "Queue lag and data-freshness thresholds may be tightened by venue policy, never
+# relaxed by an adapter."
+
+groups:
+  - name: operational
+    interval: 30s
+    rules:
+      # 08 §4: "event dispatch oldest-record age >30 seconds".
+      - alert: EventDispatchOldestRecordAgeAbove30s
+        expr: outbox_oldest_record_age_seconds > 30
+        for: 2m
+        labels:
+          severity: SEV-2
+          owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          runbook_url: https://runbooks.trade.internal/incident-sev2-response
+        annotations:
+          summary: "Event dispatch oldest-record age above 30 seconds"
+          description: >-
+            The oldest undispatched outbox record is older than 30 seconds and has
+            persisted for two minutes. 08 §4: "event dispatch oldest-record age
+            >30 seconds" pages the on-call operator. 25 §6: "Outbox dispatch
+            delayed | Preserve committed records, alert on lag, apply bounded
+            backpressure; no event loss or duplicate domain transition."
+          threshold: "outbox_oldest_record_age_seconds > 30s, sustained 2m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds"
+          action: >-
+            Check dispatcher health, database lock contention, and downstream
+            consumer saturation. Committed outbox records are durable; dispatch
+            resumes idempotently (19_DEPLOYMENT_TOPOLOGY_AND_SIZING.md §5). Do NOT
+            bypass the outbox. NOTE: sustained lag above 5s for 10 minutes is the
+            documented threshold for introducing NATS JetStream
+            (23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §6) — evaluate that gate,
+            but do not enable it without the recorded evidence.
+
+      # 08 §4: "required market-data freshness limit breached". The numeric limit
+      # is per instrument/market, not a global figure: 16_MARKET_DATA_AND_VENUE_
+      # ADAPTERS.md §2: "Market data is considered stale when its age exceeds the
+      # instrument/market-specific freshness threshold configured in the environment
+      # policy." The signal is therefore the policy-evaluated staleness flag, and
+      # the exporter records the per-market limit it applied.
+      - alert: MarketDataFreshnessBreach
+        expr: market_data_freshness_seconds > on() market_data_freshness_limit_seconds
+        for: 2m
+        labels:
+          severity: SEV-2
+          owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          runbook_url: https://runbooks.trade.internal/incident-sev2-response
+        annotations:
+          summary: "Required market-data freshness limit breached"
+          description: >-
+            Observed market-data age exceeds the instrument/market-specific
+            freshness threshold configured in the environment policy. 08 §4:
+            "required market-data freshness limit breached" pages the on-call
+            operator. 16_MARKET_DATA_AND_VENUE_ADAPTERS.md §2: "Risk-increasing
+            commands are rejected when required inputs are stale or degraded. The
+            platform never substitutes a cached value without labeling its age and
+            source." The threshold may be tightened by venue policy, never relaxed
+            by an adapter.
+          threshold: "market_data_freshness_seconds > market_data_freshness_limit_seconds (policy-configured per instrument/market), sustained 2m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds; limit value from 16_MARKET_DATA_AND_VENUE_ADAPTERS.md §2 (environment policy, not a platform constant)"
+          action: >-
+            Mark the affected feed unhealthy and deny commands requiring that data
+            (25 §6: "Market data stale or contradictory | Mark feed unhealthy; deny
+            commands requiring the affected data; retain provenance and alert").
+            Do not substitute a cached value.
+
+      # 08 §4: "database primary unavailable".
+      - alert: DatabasePrimaryUnavailable
+        expr: pg_up{role="primary"} == 0
+        for: 2m
+        labels:
+          severity: SEV-1
+          owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          runbook_url: https://runbooks.trade.internal/incident-sev1-response
+        annotations:
+          summary: "Authoritative PostgreSQL primary unavailable"
+          description: >-
+            The authoritative PostgreSQL 17 HA primary is unavailable. 08 §4:
+            "database primary unavailable" pages the on-call operator. 25 §6:
+            "PostgreSQL primary unavailable | Stop authoritative mutations; do not
+            substitute Redis, event bus, or local memory as source of truth." 23 §2:
+            a managed HA primary is the "single writer for authoritative financial
+            state".
+          threshold: "pg_up{role=\"primary\"} == 0, sustained 2m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds"
+          action: >-
+            Page PLATFORM_OPERATIONS. Stop authoritative mutations. Fail closed for
+            new risk-increasing activity (01_SYSTEM_ARCHITECTURE.md §6). Promote the
+            in-region HA standby if needed; do NOT promote across regions
+            automatically (10_OPERATIONS_AND_DISASTER_RECOVERY.md: "cross-region
+            replicas are not promoted automatically").
+
+      # Material reconciliation break that persists beyond the two-minute page
+      # window without disposition. The immediate-page integrity variant lives in
+      # safety-invariants.yml.
+      - alert: ReconciliationBreakUnresolved
+        expr: reconciliation_breaks_open{severity="material"} > 0
+        for: 2m
+        labels:
+          severity: SEV-2
+          owner: risk-operations-oncall
+          team: RISK_OPERATIONS
+          runbook_url: https://runbooks.trade.internal/incident-sev2-response
+        annotations:
+          summary: "Material reconciliation break remains unresolved"
+          description: >-
+            A material reconciliation break has remained open and undispositioned
+            for more than two minutes. 08 §4: "a material reconciliation break
+            remains unresolved" pages the on-call operator. 05_PERSISTENCE_EVENTING_
+            RECONCILIATION.md §Reconciliation requires difference classification,
+            owner, severity, evidence, resolution, aging SLA, and re-open support.
+          threshold: "reconciliation_breaks_open{severity=\"material\"} > 0, sustained 2m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds"
+          action: >-
+            RISK_OPERATIONS assigns a case owner and aging SLA. Affected
+            risk-increasing scope stays blocked until dispositioned (05
+            §Reconciliation).
+
+      # 19_DEPLOYMENT_TOPOLOGY_AND_SIZING.md §3: PostgreSQL CPU, memory, IOPS,
+      # connection count, WAL throughput, queue lag, and storage growth must be
+      # measured under the stated envelope before live activation.
+      - alert: DatabaseStorageHeadroomLow
+        expr: |
+          (pg_database_size_bytes / pg_data_disk_bytes) > 0.80
+        for: 15m
+        labels:
+          severity: SEV-3
+          owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          runbook_url: https://runbooks.trade.internal/incident-sev3-response
+        annotations:
+          summary: "PostgreSQL storage above 80% of provisioned capacity"
+          description: >-
+            Storage consumption has exceeded 80% of the provisioned 1 TiB
+            encrypted SSD. 19 §3: storage growth is measured and reviewed against
+            benchmark and growth forecasts; PostgreSQL "does not autoscale blindly".
+          threshold: "storage_used_ratio > 0.80, sustained 15m"
+          threshold_citation: "19_DEPLOYMENT_TOPOLOGY_AND_SIZING.md §3 (storage reviewed against benchmark and growth forecasts; no blind autoscale). 80% is the operational early-warning point, not a blueprint constant."
+          action: "Plan a reviewed storage increase or a data lifecycle action. Do not delete retained data: 05 §Data retention and legal hold override ordinary deletion."
+
+      # 10_OPERATIONS_AND_DISASTER_RECOVERY.md §Drill schedule: "Monthly backup
+      # restore verification. Quarterly regional recovery exercise. Quarterly
+      # kill-switch exercise. Semiannual full incident simulation."
+      - alert: BackupRestoreVerificationOverdue
+        expr: time() - backup_last_restore_verification_timestamp_seconds > 2592000
+        labels:
+          severity: SEV-2
+          owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          runbook_url: https://runbooks.trade.internal/backup-restore-verification
+        annotations:
+          summary: "Backup restore verification overdue"
+          description: >-
+            No restore verification has been recorded for more than 30 days. 10_
+            OPERATIONS_AND_DISASTER_RECOVERY.md §Drill schedule requires monthly
+            backup restore verification. 05_PERSISTENCE_EVENTING_RECONCILIATION.md
+            §Backup additionally requires weekly restore verification, so the
+            effective obligation is the stricter weekly cadence; a monthly gap is a
+            breach of the minimum.
+          threshold: "days since last restore verification > 30d (monthly minimum; weekly is the stricter control)"
+          threshold_citation: "10_OPERATIONS_AND_DISASTER_RECOVERY.md §Drill schedule; 05_PERSISTENCE_EVENTING_RECONCILIATION.md §Backup"
+          action: "Execute the backup-restore-verification runbook and record evidence. 12_DECISION_REGISTER.md ADR-025: recovery objectives must not be claimed until drills demonstrate them."
+
+      - alert: QuarterlyRecoveryExerciseOverdue
+        expr: time() - recovery_last_quarterly_exercise_timestamp_seconds > 7776000
+        labels:
+          severity: SEV-2
+          owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          runbook_url: https://runbooks.trade.internal/quarterly-recovery-exercise
+        annotations:
+          summary: "Quarterly regional recovery exercise overdue"
+          description: >-
+            No regional recovery exercise has been recorded within 90 days. 10_
+            OPERATIONS_AND_DISASTER_RECOVERY.md §Drill schedule: "Quarterly regional
+            recovery exercise." 08 §Recovery objectives: RTO <= 30 minutes and RPO
+            <= 5 minutes are "validated by drills".
+          threshold: "days since last quarterly recovery exercise > 90d"
+          threshold_citation: "10_OPERATIONS_AND_DISASTER_RECOVERY.md §Drill schedule; 08_NFR_OBSERVABILITY_AND_CAPACITY.md §Recovery objectives"
+          action: "Run the quarterly-recovery-exercise runbook. Until the drill passes, the RTO/RPO targets are unproven and must not be claimed (12_DECISION_REGISTER.md ADR-025)."
+
+      # 23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §2: "Drift is detected;
+      # production changes require reviewed plan and release evidence."
+      # 24_ENTERPRISE_RELEASE_STANDARD.md §5: "unexplained drift creates an
+      # operational incident and blocks further privileged changes until resolved."
+      - alert: InfrastructureDriftDetected
+        expr: terraform_plan_changes_detected == 1
+        labels:
+          severity: SEV-3
+          owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          runbook_url: https://runbooks.trade.internal/incident-sev3-response
+        annotations:
+          summary: "Terraform plan shows unapplied drift"
+          description: >-
+            A scheduled `terraform plan` reports changes relative to the recorded
+            state. 23 §2 requires drift detection; 24 §5 requires unexplained drift
+            to create an operational incident and block further privileged changes
+            until resolved.
+          threshold: "terraform_plan_changes_detected == 1 (any non-empty plan)"
+          threshold_citation: "23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §2; 24_ENTERPRISE_RELEASE_STANDARD.md §5"
+          action: "Triage the plan, identify the change source, and either reconcile with reviewed evidence or revert. Do not apply unexplained drift."
+
+      # 10_OPERATIONS_AND_DISASTER_RECOVERY.md: after recovery the system starts in
+      # RECOVERY_HOLD. 01_SYSTEM_ARCHITECTURE.md §10 invariant 4: "No restored
+      # environment may leave RECOVERY_HOLD without independent verification."
+      - alert: RecoveryHoldActiveTooLong
+        expr: recovery_hold_state == 1 and (time() - recovery_hold_entered_timestamp_seconds) > 86400
+        for: 1h
+        labels:
+          severity: SEV-2
+          owner: platform-operations-oncall
+          risk_owner: risk-operations-oncall
+          team: PLATFORM_OPERATIONS
+          runbook_url: https://runbooks.trade.internal/regional-failover-recovery-hold
+        annotations:
+          summary: "Environment has been in RECOVERY_HOLD longer than 24 hours"
+          description: >-
+            The environment has remained in RECOVERY_HOLD for more than 24 hours.
+            10_OPERATIONS_AND_DISASTER_RECOVERY.md: "After recovery, the system
+            starts in RECOVERY_HOLD: read-only observation and reconciliation are
+            allowed; new risk-increasing commands, strategy deployment, credential
+            rotation, and live activation remain blocked." Re-enable requires the
+            full condition list and two distinct approvers.
+          threshold: "recovery_hold_state == 1 AND duration > 24h"
+          threshold_citation: "10_OPERATIONS_AND_DISASTER_RECOVERY.md §Recovery topology and failover authority; 01_SYSTEM_ARCHITECTURE.md §10 invariant 4"
+          action: "Convene the re-enable checklist. Recovery never automatically resumes live operations (23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md §4)."
+
+  - name: capacity
+    interval: 30s
+    rules:
+      # 08 §Capacity baseline: 2,000 market events/sec, 100 order commands/sec, 500
+      # concurrent strategies, 50 concurrent operators, 20 venues.
+      - alert: MarketEventThroughputBelowEnvelope
+        expr: rate(market_events_total[1m]) < 2000 and on(environment) environment_tier == "production"
+        for: 5m
+        labels:
+          severity: SEV-3
+          owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          runbook_url: https://runbooks.trade.internal/incident-sev3-response
+        annotations:
+          summary: "Market event throughput below the 2,000 events/sec reference envelope"
+          description: >-
+            Sustained market-event throughput is below the 2,000 events/sec
+            reference envelope for a production environment. 08 §Capacity baseline:
+            "Reference production cluster must sustain 2,000 market events/sec, 100
+            order commands/sec, 500 concurrent strategies, 50 concurrent operators,
+            and 20 venues without breaching the stated latency targets."
+          threshold: "rate(market_events_total[1m]) < 2000/s in a production environment, sustained 5m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Capacity baseline; 19_DEPLOYMENT_TOPOLOGY_AND_SIZING.md §3"
+          action: "Compare against the published load profile before treating this as a fault: the envelope is a capacity acceptance target, and low traffic is not itself an incident. If load is present but throughput is short, treat as a capacity finding per 19 §6."
+
+      - alert: OrderCommandThroughputBelowEnvelope
+        expr: rate(order_commands_total[1m]) < 100 and on(environment) environment_tier == "production" and rate(received_market_events_total[1m]) > 2000
+        for: 5m
+        labels:
+          severity: SEV-3
+          owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          runbook_url: https://runbooks.trade.internal/incident-sev3-response
+        annotations:
+          summary: "Order command throughput below the 100 commands/sec reference envelope under load"
+          description: >-
+            Order-command throughput is below 100/sec while market-event throughput
+            is at or above the 2,000/sec envelope, indicating a bottleneck in the
+            command path rather than an absence of load. 08 §Capacity baseline sets
+            100 order commands/sec.
+          threshold: "rate(order_commands_total[1m]) < 100/s while rate(received_market_events_total[1m]) > 2000/s, sustained 5m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Capacity baseline"
+          action: "Investigate the command path: Risk Engine latency, OMS transition latency, and PostgreSQL lock waits. Do not relax risk checks to clear throughput (17_CONFIGURATION_AND_RISK_POLICY.md §3)."
+
+      # 08 §Capacity baseline: "After each burst, queued work must return to the
+      # pre-burst lag within 15 minutes without dropping authoritative events."
+      - alert: QueueBacklogRecoveryExceeds15Minutes
+        expr: outbox_backlog_recovery_minutes > 15
+        labels:
+          severity: SEV-3
+          owner: platform-operations-oncall
+          team: PLATFORM_OPERATIONS
+          runbook_url: https://runbooks.trade.internal/incident-sev3-response
+        annotations:
+          summary: "Queue backlog has not drained within 15 minutes of the burst ending"
+          description: >-
+            Post-burst queue recovery exceeded 15 minutes. 08 §Capacity baseline:
+            "After each burst, queued work must return to the pre-burst lag within
+            15 minutes without dropping authoritative events or violating venue
+            rate limits." 19 §3: apply bounded queues and backpressure.
+          threshold: "outbox_backlog_recovery_minutes > 15"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Capacity baseline (15-minute recovery criterion)"
+          action: "Verify no authoritative events were dropped, then record the finding as capacity evidence under 19 §6."

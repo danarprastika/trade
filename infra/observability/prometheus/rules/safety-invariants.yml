@@ -1,0 +1,221 @@
+# Safety-invariant and authority-loss alert rules.
+#
+# 08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds:
+# "Page immediately for any unauthorized order, risk/OMS authority loss, live
+# credential exposure, system halt failure, or material ledger/reconciliation
+# integrity break."
+#
+# These are the zero-tolerance safety invariants. 08 §Measurement boundaries:
+# "unauthorized financial command acceptance target is zero; every accepted
+# risk-increasing command must have a durable risk decision and audit event; a
+# missing/stale authoritative input causes a fail-closed decision. These are
+# invariant checks, not statistical SLOs." They therefore page IMMEDIATELY with
+# `for:` omitted, and they are never suppressed by maintenance windows:
+# 08 §1 excludes only *approved maintenance* from availability, not safety
+# invariants.
+#
+# 22_AUDIT_INTEGRITY_AND_EVIDENCE.md §3: "A chain break, missing sequence,
+# signature failure, or unexpected checkpoint is a SEV-1 security event."
+
+groups:
+  - name: safety-invariants
+    interval: 30s
+    rules:
+      - alert: UnauthorizedOrderAccepted
+        expr: increase(orders_accepted_total{authorized="false"}[1m]) > 0
+        labels:
+          severity: SEV-1
+          owner: risk-operations-oncall
+          security_owner: security-oncall
+          team: RISK_OPERATIONS
+          invariant: zero-tolerance
+          runbook_url: https://runbooks.trade.internal/kill-switch-halt-activation
+        annotations:
+          summary: "An unauthorized order was accepted"
+          description: >-
+            At least one order was accepted without authorization. 08 §Error
+            budgets and alert thresholds: "Page immediately for any unauthorized
+            order". 08 §Measurement boundaries: "unauthorized financial command
+            acceptance target is zero".
+          threshold: "orders_accepted_total{authorized=\"false\"} increases by > 0 within 1m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds (page immediately) and §Measurement boundaries (target is zero)"
+          action: >-
+            Page RISK_OPERATIONS and SECURITY immediately. Activate the system halt
+            per 10_OPERATIONS_AND_DISASTER_RECOVERY.md §Immediate response steps
+            1-2, preserve all evidence, and treat any resulting order as requiring
+            reconciliation before any exposure-increasing action.
+
+      - alert: RiskOMSAuthorityLost
+        expr: risk_engine_authoritative == 0 or oms_authoritative == 0
+        labels:
+          severity: SEV-1
+          owner: risk-operations-oncall
+          team: RISK_OPERATIONS
+          invariant: zero-tolerance
+          runbook_url: https://runbooks.trade.internal/incident-sev1-response
+        annotations:
+          summary: "Loss of Risk Engine or OMS authority"
+          description: >-
+            The Risk Engine or the OMS reports itself non-authoritative. 08 §Error
+            budgets and alert thresholds: "Page immediately for ... risk/OMS
+            authority loss". 25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_
+            PROFILE.md §3 invariant 1: the Risk Engine is the deterministic veto
+            and "AI output, model confidence, operator UI state, and venue response
+            cannot override it".
+          threshold: "risk_engine_authoritative == 0 OR oms_authoritative == 0 (immediate)"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds (page immediately)"
+          action: >-
+            Page immediately. Fail closed for all new risk-increasing activity per
+            01_SYSTEM_ARCHITECTURE.md §6. Activate the halt. Do NOT substitute any
+            other component for the missing authority: 25 §6 forbids substituting
+            Redis, the event bus, or local memory.
+
+      - alert: LiveCredentialExposureDetected
+        expr: increase(secret_exposure_events_total{source="live"}[1m]) > 0
+        labels:
+          severity: SEV-1
+          owner: security-oncall
+          security_owner: security-oncall
+          team: SECURITY
+          invariant: zero-tolerance
+          runbook_url: https://runbooks.trade.internal/key-rotation
+        annotations:
+          summary: "Live credential exposure detected"
+          description: >-
+            A live credential was observed outside the managed secret store. 08 §Error
+            budgets and alert thresholds: "Page immediately for ... live credential
+            exposure". 06_SECURITY_AND_ACCESS_CONTROL.md §6: "Secrets,
+            authentication factors, private keys, and raw access tokens never enter
+            source, logs, prompts, analytics, test fixtures, or client bundles."
+          threshold: "secret_exposure_events_total{source=\"live\"} increases by > 0 within 1m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds (page immediately)"
+          action: >-
+            Page SECURITY immediately. Revoke and rotate the affected credential via
+            06 §6 (\"Rotate service credentials at most every 90 days or immediately
+            on suspected exposure\"), invalidate dependent sessions, and assess signed
+            audit and artifact integrity. Run the key-rotation runbook.
+
+      - alert: SystemHaltFailure
+        expr: increase(halt_activation_attempts_total{result="failed"}[1m]) > 0
+        labels:
+          severity: SEV-1
+          owner: risk-operations-oncall
+          team: RISK_OPERATIONS
+          invariant: zero-tolerance
+          runbook_url: https://runbooks.trade.internal/kill-switch-halt-activation
+        annotations:
+          summary: "System halt activation failed"
+          description: >-
+            A halt activation attempt did not succeed. 08 §Error budgets and alert
+            thresholds: "Page immediately for ... system halt failure". 17_
+            CONFIGURATION_AND_RISK_POLICY.md §5: "Halt activation is immediately
+            effective"; 25 §3 invariant 9: a halt is monotonic and cannot be
+            silently cleared.
+          threshold: "halt_activation_attempts_total{result=\"failed\"} increases by > 0 within 1m"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds (page immediately)"
+          action: >-
+            Page RISK_OPERATIONS immediately and treat trading as halted regardless
+            of the control-plane response. Use the break-glass path per 06_
+            SECURITY_AND_ACCESS_CONTROL.md §5 (two-person release, incident ID,
+            30-minute maximum) if the normal halt path is unavailable. Break-glass
+            "cannot bypass Risk Engine, OMS, ledger, or live activation gates".
+
+      - alert: AuditChainIntegrityBreak
+        expr: audit_chain_verification_success == 0
+        labels:
+          severity: SEV-1
+          owner: security-oncall
+          security_owner: security-oncall
+          team: SECURITY
+          invariant: zero-tolerance
+          runbook_url: https://runbooks.trade.internal/audit-chain-verification
+        annotations:
+          summary: "Audit chain verification failed (integrity break)"
+          description: >-
+            Audit chain verification detected a missing sequence, invalid hash,
+            signature failure, or unexpected checkpoint. 22_AUDIT_INTEGRITY_AND_
+            EVIDENCE.md §3: "A chain break, missing sequence, signature failure, or
+            unexpected checkpoint is a SEV-1 security event. The system stops
+            privileged mutations and risk-increasing activity, preserves evidence,
+            and alerts the owner/security operator."
+          threshold: "audit_chain_verification_success == 0 (immediate)"
+          threshold_citation: "22_AUDIT_INTEGRITY_AND_EVIDENCE.md §3 (SEV-1 security event) and 08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds (material ledger/reconciliation integrity break)"
+          action: >-
+            Page SECURITY and the owner immediately. Stop privileged mutations and
+            risk-increasing activity. Preserve evidence. Do not delete or repair the
+            chain: 22 §4 states deletion is permitted only after retention expiry,
+            legal-hold clearance, and two-person approval, and the deletion event is
+            itself retained.
+
+      - alert: MaterialLedgerReconciliationIntegrityBreak
+        expr: reconciliation_material_breaks_unresolved > 0
+        labels:
+          severity: SEV-1
+          owner: risk-operations-oncall
+          team: RISK_OPERATIONS
+          invariant: zero-tolerance
+          runbook_url: https://runbooks.trade.internal/incident-sev1-response
+        annotations:
+          summary: "Material reconciliation break unresolved"
+          description: >-
+            At least one material reconciliation break is unresolved. 08 §Error
+            budgets and alert thresholds: "Page the on-call operator when ... a
+            material reconciliation break remains unresolved" and "Page immediately
+            for ... material ledger/reconciliation integrity break". 05_
+            PERSISTENCE_EVENTING_RECONCILIATION.md §Reconciliation: "A material
+            unresolved break blocks affected risk-increasing actions."
+          threshold: "reconciliation_material_breaks_unresolved > 0 (immediate page for integrity break; 2m for the ordinary unresolved-break condition)"
+          threshold_citation: "08_NFR_OBSERVABILITY_AND_CAPACITY.md §Error budgets and alert thresholds; 05_PERSISTENCE_EVENTING_RECONCILIATION.md §Reconciliation"
+          action: >-
+            RISK_OPERATIONS owns the case (18_GOVERNANCE_DATA_AND_COMPLIANCE.md
+            §1). Affected risk-increasing scope is blocked. Reconcile orders,
+            fills, balances, and positions per 10_OPERATIONS_AND_DISASTER_RECOVERY_
+            MD §Immediate response step 5. Do not re-enable the affected scope
+            until the case is dispositioned and approved.
+
+      - alert: UnknownOrderUnresolved
+        expr: oms_orders_in_unknown_state > 0
+        labels:
+          severity: SEV-1
+          owner: risk-operations-oncall
+          team: RISK_OPERATIONS
+          invariant: zero-tolerance
+          runbook_url: https://runbooks.trade.internal/incident-sev1-response
+        annotations:
+          summary: "Order in UNKNOWN state requires reconciliation"
+          description: >-
+            At least one order is in the OMS UNKNOWN state. 04_TRADING_DOMAIN_AND_
+            RISK.md §Order lifecycle: "UNKNOWN is mandatory when a submission
+            timeout prevents determination of venue outcome. The system reconciles
+            before any retry that could duplicate exposure." 11_EXECUTION_GATES.md
+            G11: no "unresolved UNKNOWN order" may exist at live activation.
+          threshold: "oms_orders_in_unknown_state > 0 (immediate)"
+          threshold_citation: "04_TRADING_DOMAIN_AND_RISK.md §Order lifecycle; 11_EXECUTION_GATES.md G11 (live-blocking)"
+          action: >-
+            Do NOT retry the order. 10_OPERATIONS_AND_DISASTER_RECOVERY.md: "If
+            venue state cannot be established, orders with uncertain outcome remain
+            UNKNOWN; the system must not retry an exposure-increasing command."
+            Reconcile via the venue adapter before any further action.
+
+      - alert: HaltPrecedenceViolationDetected
+        expr: increase(halt_precedence_violations_total[5m]) > 0
+        labels:
+          severity: SEV-1
+          owner: risk-operations-oncall
+          team: RISK_OPERATIONS
+          invariant: zero-tolerance
+          runbook_url: https://runbooks.trade.internal/kill-switch-halt-activation
+        annotations:
+          summary: "A command attempted to clear a higher-level halt"
+          description: >-
+            A lower-authority command attempted to clear a higher-level halt. 04_
+            TRADING_DOMAIN_AND_RISK.md §Halt hierarchy: "SYSTEM_HALT > VENUE_HALT >
+            MARKET_HALT > STRATEGY_HALT > ACCOUNT_HALT. A higher-level halt cannot
+            be bypassed by a lower-level enable command." 25 §3 invariant 9: "A
+            halt is monotonic."
+          threshold: "halt_precedence_violations_total increases by > 0 within 5m"
+          threshold_citation: "04_TRADING_DOMAIN_AND_RISK.md §Halt hierarchy; 25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md §3 invariant 9"
+          action: >-
+            Page RISK_OPERATIONS. Treat the halt as active. Investigate the
+            authorization path that produced the attempt; a precedence violation
+            is an authorization defect, not a UI error.
