@@ -34,7 +34,7 @@ The platform is designed around one non-negotiable authority rule:
 
 ## Full-scale enterprise release posture
 
-This is not an MVP architecture. The baseline includes long-lived configuration governance, feature-flag safety, dependency resilience, migration discipline, chaos engineering, business continuity, cyber recovery, supply-chain provenance, accessibility, privacy lifecycle controls, capacity governance, incident management, and quarterly architecture review. `24_ENTERPRISE_RELEASE_STANDARD.md` is binding for these cross-cutting requirements. `25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md` closes the deep audit and defines the binding full-scale release evidence profile. `25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md` closes the deep audit and defines the binding full-scale release evidence profile.
+This is not an MVP architecture. The baseline includes long-lived configuration governance, feature-flag safety, dependency resilience, migration discipline, chaos engineering, business continuity, cyber recovery, supply-chain provenance, accessibility, privacy lifecycle controls, capacity governance, incident management, and quarterly architecture review. `24_ENTERPRISE_RELEASE_STANDARD.md` is binding for these cross-cutting requirements. `25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md` closes the deep audit and defines the binding full-scale release evidence profile.
 
 ## Enterprise controls included
 
@@ -73,11 +73,6 @@ No component may create a second source of truth for order status, financial bal
 `23_ARCHITECTURE_AND_COMPLIANCE_DECISIONS.md` is the binding closure for deployment topology, policy enforcement, eventing thresholds, disaster recovery, jurisdiction eligibility, toolchain lifecycle, API limits, SLO measurement, and live activation evidence. Where it is more specific than an earlier summary, the addendum controls.
 
 Initial jurisdiction posture: Indonesia is the initial review target only when explicitly declared by the account holder; location signals are never used to infer legal residence. This is not a legal approval. Live capability remains disabled until current eligibility evidence is approved for the exact account, venue, product, and activity. Under-age or otherwise ineligible users cannot activate live capability; no age or identity control may be bypassed.
-
-
-## Final deep audit
-
-`25_DEEP_ARCHITECTURAL_AUDIT_AND_FULL_SCALE_RELEASE_PROFILE.md` is the binding audit addendum for full-scale enterprise classification, architecture invariants, failure-mode disposition, enterprise capability evidence, and document precedence. It does not substitute document completion for runtime G0–G11 evidence.
 
 
 ## Final deep audit
