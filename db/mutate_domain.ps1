@@ -91,7 +91,13 @@ function Invoke-Mutation {
         }
 
         if ($MustFailPattern -and ($r.Out -notmatch $MustFailPattern)) {
-            Write-Host "    WARNING: expected a test named / pattern / to fail; it may have failed for the wrong reason" -ForegroundColor Yellow
+            # Caught by tests other than the one this mutation names is not proof: the mutation
+            # may have broken something incidental. The SQL harness already hard-fails on the
+            # equivalent over-broad case, and leaving this a warning let K and I report as caught
+            # while no assertion capable of detecting their mutation had failed.
+            $alsoFailed = if ($failedBy.Count) { $failedBy -join ', ' } else { 'no named test (build/compile failure)' }
+            Write-Host "    WRONG REASON: nothing mentions '$MustFailPattern'; caught only by $alsoFailed" -ForegroundColor Red
+            return @{ Label = $Label; Caught = $false; Reason = 'wrong-reason'; Failures = $failedBy }
         }
         return @{ Label = $Label; Caught = $true; Failures = $failedBy }
     } finally {
@@ -139,7 +145,7 @@ $mutations = @(
         File   = 'domain/risk/evaluate.go'
         Find   = "`tif measured == nil {"
         Replace= "`tif false {"
-        MustFail= 'UnmeasurableFigureDeniesDistinctlyFromAnUnconfiguredLimit'
+        MustFail= 'AnUnmeasurableFigureDeniesDistinctly'
     },
     @{
         Label  = 'E: halt precedence inverted (highest rank loses)'
@@ -165,16 +171,21 @@ $mutations = @(
     @{
         Label  = 'H: boundary inclusivity ignored (exact-limit order refused)'
         File   = 'domain/risk/evaluate.go'
-        Find   = 'case cmp == 0 && limit.Boundary == BoundaryExclusive:'
-        Replace= 'case false && limit.Boundary == BoundaryExclusive:'
-        MustFail= 'BoundaryInclusivityDecidesTheExactLimitOrder'
+        # The boundary is not decided by a switch over a Boundary value. risk.go fixes
+        # DerivationBoundary = BoundaryInclusive and the inclusive semantics are baked into the
+        # comparison itself, so the honest mutation turns ">" into ">=" and the exact-limit case
+        # flips to refused. BoundaryExclusive is a declared-but-unused constant; mutating a
+        # decision that no code consults would have passed while proving nothing.
+        Find   = 'if measured.Cmp(bound) > 0 {'
+        Replace= 'if measured.Cmp(bound) >= 0 {'
+        MustFail= 'BoundaryIsInclusiveAtTheExactLimit'
     },
     @{
         Label  = 'I: an unevaluated halt gate treated as clear'
         File   = 'domain/risk/evaluate.go'
         Find   = 'if !req.Halt.Evaluated {'
         Replace= 'if false {'
-        MustFail= 'UneaminedHaltGateRejects'
+        MustFail= 'AnUnevaluatedHaltGateRejects'
     },
     @{
         Label  = 'J: required role no longer enforced'
@@ -207,7 +218,12 @@ $survivors = @($results | Where-Object { -not $_.Caught })
 if ($survivors.Count -gt 0) {
     Write-Host ""
     foreach ($s in $survivors) {
-        Write-Host "SURVIVED: $($s.Label)  ($($s.Reason))" -ForegroundColor Red
+        # Only a genuine survival may be called SURVIVED. 'wrong-reason' and 'anchor-not-found'
+        # both mean the mutation WAS detected, just not by anything that proves what it claims.
+        # Labelling those survivors tells an operator to go hunting for a missing test when the
+        # defect is a stale pattern or a name that no longer exists.
+        $word = if ($s.Reason -eq 'survived') { 'SURVIVED' } else { 'NOT PROVEN' }
+        Write-Host "${word}: $($s.Label)  ($($s.Reason))" -ForegroundColor Red
     }
     exit 1
 }
