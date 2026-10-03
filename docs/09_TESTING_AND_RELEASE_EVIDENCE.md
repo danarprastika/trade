@@ -24,7 +24,10 @@ A gate that has only ever been run against a correct repository has been shown t
 | `db/verify-schema-live-mutations.ps1` | The live schema gate across five dimensions: function bodies, triggers, indexes, named constraints, and the fail-closed parser | `assertions=25 not_detected=0`, every restore byte-identical |
 | `db/mutate_domain.ps1` | Twelve domain invariants in Go source, one behaviour at a time | `12/12` caught, each by the test it names |
 | `db/mutate_0019.ps1` | The migration series itself, proving each rule it enforces is load-bearing | `8/8` caught |
-| `db/mutate_0016.ps1`, `mutate_0017.ps1`, `mutate_0018.ps1`, `mutate_0020_0021.ps1` | The same, for the remaining migrations in the series | Proven when recorded; not re-run in the 2026-10-03 pass, which covered the domain harness and the schema gate |
+| `db/mutate_0020_0021.ps1` | The same, for the canonical-ID bit layout and the nanosecond binding | `6/6` caught |
+| `db/mutate_0016.ps1`, `mutate_0017.ps1`, `mutate_0018.ps1` | The same, for the remaining migrations in the series | Proven when recorded; not re-run in the 2026-10-03 pass |
+
+The re-run covered the harnesses whose migrations had changed recently. `0019`, `0020` and `0021` were last touched on 2026-10-03, and `mutate_0020_0021.ps1` builds five of its six mutation patterns inside the script rather than as literals, so its anchors cannot be confirmed by reading the file and only running it settles them. `0016`, `0017` and `0018` were last touched on 2026-09-30 and their literal anchors match the current migrations, which is as far as a static check can go: it shows a mutation would still apply, never that it is still caught.
 
 Each harness makes the same three guarantees, and each exists because its absence produced a false result at least once:
 
