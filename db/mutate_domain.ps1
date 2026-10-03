@@ -181,6 +181,17 @@ $mutations = @(
         MustFail= 'BoundaryIsInclusiveAtTheExactLimit'
     },
     @{
+        # The integer half of the same property. evaluateRate compares three INTEGER count
+        # columns, so mutating only the decimal comparison in H left the rate path's boundary
+        # untested: an order sitting exactly on max_open_orders, max_orders_per_minute or
+        # max_cancels_per_minute was never shown to be refused if the comparison tightened.
+        Label  = 'H2: count bounds compared exclusively (exact-count order refused)'
+        File   = 'domain/risk/evaluate.go'
+        Find   = 'if measured > bound {'
+        Replace= 'if measured >= bound {'
+        MustFail= 'CountsExactlyAtTheBoundAreWithinIt'
+    },
+    @{
         Label  = 'I: an unevaluated halt gate treated as clear'
         File   = 'domain/risk/evaluate.go'
         Find   = 'if !req.Halt.Evaluated {'
@@ -196,7 +207,9 @@ $mutations = @(
     }
 )
 
-Write-Host "mutating 11 domain behaviours"
+# Derived, not typed: a hardcoded count here drifted from the array it describes the moment a
+# mutation was added, which is the same stale-figure defect the rest of this work removed.
+Write-Host "mutating $($mutations.Count) domain behaviours"
 Write-Host ""
 
 $results = @()
