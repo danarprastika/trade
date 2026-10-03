@@ -55,6 +55,25 @@ const (
 	EntityDataQuality  EntityType = "dqt"
 	EntityEligibility  EntityType = "elg"
 	EntityMarketData   EntityType = "mkt"
+
+	// The twelve below were absent from this set while the schema already
+	// required them, so no Go code could mint a valid identifier for the column
+	// named in each comment. A parity test compared Go's entity types against
+	// the SQL encoder -- which accepts any prefix as text -- and so agreed with
+	// the database about every one of these without noticing any of them were
+	// missing. The prefixes themselves came from migrations 0003-0015.
+	EntityLiveActivation  EntityType = "act" // ops.live_activation.activation_id
+	EntityBalance         EntityType = "bal" // portfolio.balance.balance_id
+	EntityCheckpoint      EntityType = "ckp" // audit.checkpoint.checkpoint_id
+	EntityDeployment      EntityType = "dep" // strategy.deployment.deployment_id
+	EntityDeadLetter      EntityType = "edl" // ops.event_dead_letter.dead_letter_id
+	EntityJournal         EntityType = "jnl" // ledger journal header.journal_id
+	EntityOrderEvent      EntityType = "oe1" // oms.order_event.order_event_id
+	EntityReconcilRun     EntityType = "rck" // reconciliation.check_run.check_run_id
+	EntitySubmission      EntityType = "sbm" // execution.submission.submission_id
+	EntitySystemState     EntityType = "sys" // ops.system_state.system_state_id
+	EntityStateTransition EntityType = "trn" // strategy.state_transition.transition_id
+	EntityWorkload        EntityType = "wid" // workload identity.workload_id
 )
 
 // knownEntities maps the closed entity-type set.
@@ -67,6 +86,10 @@ var knownEntities = map[EntityType]struct{}{
 	EntityConfigRev: {}, EntityPolicyRev: {}, EntitySession: {}, EntityIncident: {},
 	EntityFeatureFlag: {}, EntityRiskDecision: {}, EntityDataQuality: {},
 	EntityEligibility: {}, EntityMarketData: {},
+	EntityLiveActivation: {}, EntityBalance: {}, EntityCheckpoint: {},
+	EntityDeployment: {}, EntityDeadLetter: {}, EntityJournal: {},
+	EntityOrderEvent: {}, EntityReconcilRun: {}, EntitySubmission: {},
+	EntitySystemState: {}, EntityStateTransition: {}, EntityWorkload: {},
 }
 
 // EntityTypes returns the closed entity-type set in a stable, sorted order.
@@ -161,6 +184,37 @@ func (i *ID) UnmarshalText(b []byte) error {
 	return nil
 }
 
+// EntropyLength is the number of random bytes NewID consumes. It is 16 rather
+// than the 13 that IDLength (20 characters, 5 bits each) strictly requires,
+// because 128 bits is a whole number of bytes: the 28 surplus bits are
+// discarded, which costs nothing when the source is uniformly random and avoids
+// any partial-byte special case in the encoder.
+const EntropyLength = 16
+
+// IDFromBytes renders entropy as a canonical identifier without generating any.
+//
+// This exists so that the encoding is verifiable against its PostgreSQL twin.
+// Both implementations are exercised from the same fixed byte string in the
+// cross-language parity test, which is the only way to know that an identifier
+// minted on either side of the language boundary is the same value and not
+// merely the same shape.
+//
+// It is also the correct constructor for an identifier derived from entropy the
+// caller already holds -- a UUID, a hash, a partition key -- where calling
+// NewID would discard the input and produce an unrelated value. Entropy shorter
+// than EntropyLength is an error rather than being zero-padded: a caller that
+// believed it had 128 bits of entropy and supplied 64 should be told.
+func IDFromBytes(t EntityType, entropy []byte) (ID, error) {
+	if _, ok := knownEntities[t]; !ok {
+		return ID{}, fmt.Errorf("%w: %q", ErrUnknownEntityType, string(t))
+	}
+	if len(entropy) != EntropyLength {
+		return ID{}, fmt.Errorf("%w: entropy is %d bytes, want exactly %d",
+			ErrInvalidIdentifier, len(entropy), EntropyLength)
+	}
+	return ID{Entity: t, raw: string(t) + "_" + encodeCrockford(entropy, IDLength)}, nil
+}
+
 // NewID returns a new identifier of the given entity type backed by 100 bits of
 // cryptographically secure randomness. It returns an error for an unknown type
 // so that a typo in a type constant fails loudly rather than minting an
@@ -169,11 +223,11 @@ func NewID(t EntityType) (ID, error) {
 	if _, ok := knownEntities[t]; !ok {
 		return ID{}, fmt.Errorf("%w: %q", ErrUnknownEntityType, string(t))
 	}
-	var buf [16]byte
+	var buf [EntropyLength]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return ID{}, fmt.Errorf("contracts: entropy source failure: %w", err)
 	}
-	return ID{Entity: t, raw: string(t) + "_" + encodeCrockford(buf[:], IDLength)}, nil
+	return IDFromBytes(t, buf[:])
 }
 
 // MustID is NewID for contexts where the caller cannot handle entropy failure.

@@ -6,7 +6,7 @@
 // is continuous, an order cannot reach a submission state without a risk
 // decision, and a rejected risk decision must name a failed control. A CHECK
 // constraint that is never exercised by a negative test is documentation, not a
-// control (09_TESTING_AND_RELEASE_EVIDENCE.md, 24_ENTERPRISE_RELEASE_STANDARD.md §13).
+// control (09_TESTING_AND_RELEASE_EVIDENCE.md, 24_ENTERPRISE_RELEASE_STANDARD.md Â§13).
 //
 // Tests skip (not fail) when AITC_TEST_DATABASE_URL is unset, so the unit suite
 // stays runnable without a database. The database suite MUST run before any gate
@@ -158,6 +158,28 @@ func MustQueryRow(t *testing.T, ctx context.Context, tx *sql.Tx, dest any, query
 	}
 }
 
+// Queryer is the read surface MustQueryRowDB needs.
+//
+// It is an interface rather than *sql.DB so the same assertion works against a
+// transaction or a pool. Tests that assert on committed state must read through
+// the pool -- a transaction's own writes are visible to it whether or not they
+// ever committed, so reading through one proves nothing about durability.
+type Queryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// MustQueryRowDB asserts on a single row read through a pool or transaction.
+//
+// Use it to observe what actually committed. MustQueryRow exists for assertions
+// made inside a transaction that is yet to be rolled back; this one is for the
+// claim "this is durable", which a transaction cannot demonstrate about itself.
+func MustQueryRowDB(t *testing.T, ctx context.Context, q Queryer, dest any, query string, args ...any) {
+	t.Helper()
+	if err := q.QueryRowContext(ctx, query, args...).Scan(dest); err != nil {
+		t.Fatalf("query %q: %v", trim(query), err)
+	}
+}
+
 // ExpectRejected asserts that a statement is rejected by the database.
 //
 // This is the workhorse of the negative-test suite: a control that is supposed
@@ -244,22 +266,44 @@ func CanonicalID(prefix string, n int) string {
 	return b.String()
 }
 
+// sequenceFloor is the lowest ledger.entry.sequence a committed fixture may use.
+//
+// It clears every sequence literal hardcoded in this suite, the largest of which is
+// well under 1000. Keeping committed sequences above that band is what makes
+// UniqueSequence's uniqueness unconditional rather than dependent on the clock.
+const sequenceFloor = 1_000_000
+
 // UniqueSequence returns a per-run unique positive sequence number.
 //
 // ledger.entry.sequence is globally UNIQUE and append-only, so a test that must
 // observe a real COMMIT cannot reuse the same sequence number on a second run
 // against the same database.
+//
+// The result is lifted above sequenceFloor before it is returned, and that floor
+// is not decoration. The run multiplier is derived from a nanosecond clock, so
+// (runNonce & 0x3fffffff) % 100000 lands on 0 roughly once in a hundred thousand
+// runs. When it does, run*base vanishes and UniqueSequence(n) returns exactly n --
+// so a test asking for "a unique sequence" gets 1, 2, 3, and collides with the
+// small sequence literals other tests hardcode. Because ledger.entry is
+// append-only, such a row is committed forever: it was observed here as a
+// TRADE_CASH/FEE journal pair sitting on sequences 1 and 2 that made two
+// unrelated tests fail on ledger_entry_sequence_idx for every later run.
+//
+// The floor puts the lowest possible result above every literal used anywhere in
+// this suite, so the degenerate case is merely unremarkable instead of fatal, and
+// the two namespaces stay disjoint for the same reason seqBase keeps canonical-id
+// namespaces disjoint.
 func UniqueSequence(n int) int64 {
 	const base = 1 << 31
 	run := int64(runNonce&0x3fffffff) % 100000
-	return run*base + int64(n)
+	return run*base + int64(n) + sequenceFloor
 }
 
 // UniqueDigest returns a per-run unique 64-character lowercase hex digest of
 // the shape every *_digest / *_hash column requires.
 //
-// ledger.entry.source_digest is UNIQUE — that uniqueness IS the control making a
-// duplicated source fact idempotent — so a committed fixture cannot reuse a
+// ledger.entry.source_digest is UNIQUE â€” that uniqueness IS the control making a
+// duplicated source fact idempotent â€” so a committed fixture cannot reuse a
 // literal digest across runs.
 func UniqueDigest(n int) string {
 	sum := fnv.New64a()

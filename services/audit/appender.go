@@ -123,13 +123,54 @@ func (a *Appender) Append(ctx context.Context, rec Record) (string, error) {
 		rec.AuditID, maxAppendAttempts, lastErr)
 }
 
-// attempt performs one read-head-then-append cycle.
+// attempt performs one read-head-then-append cycle in its own transaction.
 func (a *Appender) attempt(ctx context.Context, rec Record) (string, error) {
 	tx, err := a.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return "", fmt.Errorf("audit: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	stored, err := a.appendIn(ctx, tx, rec)
+	if err != nil {
+		return "", err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("audit: commit: %w", err)
+	}
+	return stored, nil
+}
+
+// AppendIn writes one audit record inside a transaction the caller owns, and
+// returns the stored record hash without committing.
+//
+// Doc 05 requires domain validation, state mutation, audit record creation and
+// outbox insertion to execute in one transaction. Append could not serve that
+// requirement, because it opens its own: a submit command that called it would
+// commit the audit record for a mutation that then failed to commit, producing
+// evidence of an event that never durably happened. The chain is an append-only
+// ledger, so such a record cannot be withdrawn afterwards -- the audit trail
+// would assert something false and hold that assertion permanently.
+//
+// AppendIn exists for exactly that composition. It does not commit and does not
+// retry. Both belong to the caller's transaction: retrying here would mean
+// rolling the caller's work back, which this package has no authority to do.
+//
+// The partition head is read FOR UPDATE, so a caller running concurrent commands
+// takes the same lock Append does and the chain advances one record at a time.
+func (a *Appender) AppendIn(ctx context.Context, tx *sql.Tx, rec Record) (string, error) {
+	if tx == nil {
+		return "", errors.New("audit: AppendIn needs a transaction the caller owns")
+	}
+	return a.appendIn(ctx, tx, rec)
+}
+
+// appendIn performs one read-head-then-append cycle against tx.
+//
+// It neither commits nor rolls back. Both belong to whoever opened tx, so that a
+// caller composing an audit record with other writes gets all of them or none.
+func (a *Appender) appendIn(ctx context.Context, tx *sql.Tx, rec Record) (string, error) {
 
 	// Provision the partition before reading its head. append_record also calls
 	// ensure_partition, but it does so only when the append reaches it, and the
@@ -147,7 +188,7 @@ func (a *Appender) attempt(ctx context.Context, rec Record) (string, error) {
 	// canonical payload must commit to.
 	var lastSequence int64
 	var lastHash sql.NullString
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
         SELECT last_sequence, last_hash
           FROM audit.partition_month
          WHERE partition_key = $1
@@ -249,9 +290,6 @@ func (a *Appender) attempt(ctx context.Context, rec Record) (string, error) {
 		return "", fmt.Errorf("%w: stored %s, supplied %s", ErrHashMismatch, stored, supplied)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return "", fmt.Errorf("audit: commit: %w", err)
-	}
 	return stored, nil
 }
 

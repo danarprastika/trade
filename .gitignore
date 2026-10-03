@@ -1,0 +1,20 @@
+# Review and tooling scratch.
+#
+# These are byproducts of running a review or a mutation harness, not sources.
+# They are listed so they cannot be committed by accident: the diff dumps are large,
+# machine-generated, and describe a moment in the working tree rather than the
+# repository's state, so a committed copy goes stale immediately and then misleads.
+
+# Review scratch produced by /review passes.
+_diff_review.txt
+_untracked_review.txt
+.brud/
+
+# Mutation-harness backups. The mutate_*.ps1 scripts create these next to the file
+# they are rewriting and remove them when they finish; a leftover means a run was
+# interrupted, and the .orig bytes are the authority for restoring the file.
+*.orig
+*.mutant.bak
+
+# Verification scratch.
+.verify-tmp/

@@ -3,15 +3,35 @@
 | Field | Value |
 |---|---|
 | `gate_id` | G1 (domain foundation) / G3 (trading core) — **partial** |
-| `result` | **PASS for the database control surface only** |
+| `result` | **SUPERSEDED — see `evidence/gates/G1/g1-report.md` for the authoritative verdict, which is PASS (recorded 2026-09-30T11:20:00Z)** |
+| `superseded_by` | `evidence/gates/G1/g1-report.md`. The `FAIL` recorded in this file was correct as of `reviewed_at_utc` 2026-09-30T03:20:00Z and is retained unmodified below. It is superseded, not withdrawn: `g1-report.md` closed both unmet criteria — domain tests now exist (78 unit tests plus 6 Go/SQL parity tests), and `0020` made the Go and PostgreSQL canonical ID encodings identical with a parity test over 8 fixed vectors and all 29 entity types. Nothing in this file's body was edited to reach that verdict. |
 | `scope` | Canonical contracts (Go) and the authoritative PostgreSQL schema, exercised by negative tests |
 | `environment` | PostgreSQL 17.11, container `aitc-pg17`, host port 55439; Go 1.26.2 windows/amd64 |
-| `migrations` | `0001_foundation` … `0018_reconciliation_breaks_block_risk`, 18 of 18 applied from an empty database |
-| `evidence_locations` | `contracts/`, `db/migrations/`, `db/migrate.ps1`, `db/mutate_0016.ps1`, `db/mutate_0017.ps1`, `db/mutate_0018.ps1`, `dbtest/`, `evidence/gates/G0/` |
-| `reviewer` | Principal Engineering Agent (implementation executor) — **self-attested, not independently reviewed** |
-| `reviewed_at_utc` | 2026-09-29T17:55:00Z |
+| `migrations` | `0001_foundation` … `0019_market_data_instrument_and_symbol_enforcement`, 19 of 19 applied from an empty database |
+| `evidence_locations` | `contracts/`, `db/migrations/`, `db/migrate.ps1`, `db/mutate_0016.ps1`, `db/mutate_0017.ps1`, `db/mutate_0018.ps1`, `db/mutate_0019.ps1`, `db/mutate_0020_0021.ps1`, `db/mutate_domain.ps1`, `dbtest/`, `evidence/gates/G0/`, `evidence/gates/G2/` |
+| `reviewer` | Principal Engineering Agent (implementation executor), **plus one independent read-only review** (`g1-report.md`, "Independent review") |
+| `reviewed_at_utc` | 2026-09-30T03:20:00Z |
 | `exceptions` | See "Known gaps" — the gate does not cover domain services, API, adapters or the web application |
 | `next_action` | G1 domain services and repositories beyond the audit path; the derivation path that *writes* positions, which no control yet produces |
+
+> **Why FAIL, in short — SUPERSEDED, retained as the record of the state at
+> `reviewed_at_utc`.** The verdict is now PASS; see the `result` and
+> `superseded_by` rows above and `g1-report.md`. The reasoning below is left
+> exactly as written because it was correct when recorded, and rewriting it
+> would destroy the evidence that the correction was earned rather than
+> asserted. Seven of the nine criteria at
+> `11_EXECUTION_GATES.md:9` are supported by evidence that survived independent
+> review. Two are not. **Domain tests** cannot be satisfied, because the domain
+> services they would test do not exist — a fact this document states in its own
+> Known Gaps section. **Canonical IDs** are verified within each language but not
+> across the Go/PostgreSQL encoding boundary. Under
+> `11_EXECUTION_GATES.md:51`, partial completion is FAIL, and the domain-services
+> gap is not waivable.
+>
+> An earlier draft of this file read `result: PASS for the database control
+> surface only`. That was wrong. The corrections made in response to the
+> independent review — including two defects it found and one finding it got
+> wrong — are recorded in `g1-report.md` under "Correction record".
 
 ## What this evidence does and does not claim
 
@@ -49,10 +69,11 @@ OK    0015_workload_identity_environment_ceiling  (368 ms)
 OK    0016_position_reconciles_to_validated_fills  (273 ms)
 OK    0017_configuration_boundary_enforcement  (531 ms)
 OK    0018_reconciliation_breaks_block_risk  (434 ms)
-applied_now=18 total_files=18 failures=0 drift=0
+OK    0019_market_data_instrument_and_symbol_enforcement  (531 ms)
+applied_now=21 total_files=21 failures=0 drift=0
 ```
 
-All eighteen migrations apply to a recreated database in a single clean run. This
+All twenty-one migrations apply to a recreated database in a single clean run. This
 matters because a migration chain that only works on an already-populated
 database hides ordering dependencies.
 
@@ -65,7 +86,7 @@ deliberately perturbing an applied migration:
 ```
 DRIFT 0007_outbox_halts_ops: applied digest a3aa31143bbed017969f1109eb3663e6c89e54c9677115b2bc566d8a1be4dc66
        != file digest 009a7dff5608181538b9c1e193fa25902d1563b135d486be9efd3a9989d74abf
-applied_now=0 total_files=18 failures=0 drift=1
+applied_now=0 total_files=21 failures=0 drift=1
 exit=2
 ```
 
@@ -87,8 +108,8 @@ ok  	github.com/aitc/trade/dbtest	23.703s
 | Suite | Tests | Result |
 |---|---|---|
 | `contracts` | 60 | all pass |
-| `dbtest` | 171 | all pass |
-| **total** | **231** | **all pass** |
+| `dbtest` | 213 | all pass |
+| **total** | **351** | **all pass** |
 
 The suite was run three consecutive times **without** re-migrating in between,
 and passed three times. This was not true on the first attempt, and it stopped
@@ -124,6 +145,11 @@ removed.
 | 13 | A position was an independently writable number. Nothing derived it from validated fills, so quantity and watermark could be set to anything and stay set — the precise drift mandatory invariant 5 forbids. | Migration `0016`: validated fills are immutable and uniquely sequenced per account/instrument/venue; two deferred commit-time controls require a position's quantity to equal the signed sum of validated fills and its watermark to equal the latest validated fill. | `TestPositionMustEqualTheValidatedFills`, `TestPositionPinnedToAnOldFillSequenceIsRejected`, `TestACommittedPositionGoingStaleOnALaterFillIsRejected`, `TestACorruptedCommittedPositionIsRejectedWithNoNewFill` (mutation tested, 5/5) |
 | 14 | `config.revision` claimed immutability it did not have. `0001_foundation.sql` carries the comment "-- Immutability after activation: enforced by trigger below", but `config.revision` had **zero triggers** and the `config` schema had **zero functions**. An ACTIVE snapshot could be rewritten in place by anyone with write access, with no record that it had changed. Separately, `content_digest` was checked only for *format* and never against the document it claims to describe, so the release `signature` — defined as a signature over the digest — attested to nothing: sign an honest digest, then replace the document, and the signature still verified. | Migration `0017`: digest bound to document by CHECK; content columns immutable from INSERT at every status; closed lifecycle with database-owned timestamps; `DELETE` refused except for DRAFT; one ACTIVE revision per environment; recursive no-embedded-secrets walk; promotion provenance with dual control into live. | `TestAnActiveConfigRevisionCannotBeEditedInPlace`, `TestAConfigDigestThatDisagreesWithItsDocumentIsRejected`, `TestAPromotionIntoLiveWithoutASecondApproverIsRejected`, `TestAConfigWithAnEmbeddedSecretIsRejected` and 20 more (mutation tested, 8/8) |
 | 15 | `reconciliation.case` documented that it blocks and did not. `0005` says twice — in the table header and on the `blocked_scope` column — that "a MATERIAL unresolved break BLOCKS affected risk-increasing scope". The reconciliation schema had **zero triggers and zero functions**. `blocked_scope` is `JSONB NOT NULL`: the system records which scope a break covers and then never reads it. | Migration `0018`: the block is *derived* from `reconciliation.case` at the moment risk-increasing activity is attempted, inside `ops.assert_risk_increase_permitted`, so it cannot desynchronise from the case causing it and needs no separate clearing. Risk-reducing activity always passes. | `TestAnOpenMaterialBreakBlocksRiskIncreasingOrder`, `TestAResolvedMaterialBreakNoLongerBlocks`, `TestABreakOnOneAccountDoesNotBlockAnother`, `TestAnUninterpretableScopeBlocksEverything` and 13 more (mutation tested, 7/7) |
+| 16 | **The entire `market` schema was storage-only.** `0002_market_data.sql` declares four safety controls in comments and implements none. At the time it was audited the schema had **zero triggers, on every table**. Instrument `order_types`, `supports_shorting`, `trading_status`, `min_quantity`, `price_increment`, `min_notional` were read by nothing; `market.venue_symbol` could be rewritten in place after taking effect; `feed_health` and `freshness_policy` were referenced by no other file in the repository. | Migration `0019` (partial — 16c deliberately left open, see below): capabilities and increments enforced at order creation, tradability enforced at the risk boundary, effective venue symbol mappings made append-only, sequence watermark made monotonic, and the tautological CHECK dropped. | `TestAnOrderTypeTheInstrumentDoesNotSupportIsRefused`, `TestAnEffectiveVenueSymbolCannotBeRepointedAtAnotherInstrument`, `TestAnInstrumentThatStoppedTradingIsRefusedAtRiskApproval` and 22 more (mutation tested, 8/8) |
+| 17 | `feed_unknown_not_healthy` was a **tautology** that shipped in `0002` and survived sixteen migrations. `CHECK (health_state <> 'UNKNOWN' OR health_state = 'UNKNOWN')` is `A OR NOT A` — true for every value, rejecting nothing — sitting directly beneath a comment claiming "An unverifiable feed is a deny condition for risk-increasing activity, not an implicit pass." It was found by independent review, not by the original audit, and it is the clearest argument in this document that a green migration run proves syntax and not enforcement. | Dropped in `0019` rather than rewritten. A `feed_health` row is not an order; declaring a feed confirmed at write time would assert something the platform has not seen. The control moved to where an order is evaluated, as `market.instrument_is_tradable`, where "UNKNOWN denies" is tested against a real order. | `TestAnInstrumentWithUnknownTradingStatusIsRefusedAtRiskApproval`, `TestEveryNonOpenTradingStatusDenies` (mutation E, 8/8) |
+| 18 | `sequence_no_regression` did not enforce non-regression. `CHECK (observed_sequence IS NULL OR expected_sequence IS NULL OR observed_sequence >= 0)` is a non-negativity test; a sequence watermark is free to move backwards through it. A stale or duplicated venue report could overwrite a newer watermark and feed the gap counter from a value that has gone backwards, so the feed reports healthy on a stream replaying old data. Found by independent review (M1); the constraint's *name* asserted a property it did not have. | Split in `0019` into `feed_observed_sequence_non_negative` (the real row constraint, honestly named) and `market.guard_feed_sequence_monotonic` (the real transition constraint, which is where a non-regression property has to live). | `TestASequenceWatermarkCannotMoveBackwards`, `TestTheFirstWatermarkCanBeSetFromNull` (mutation H, 8/8) |
+| 19 | The nanosecond columns were unbound. `occurred_at_ns` / `recorded_at_ns` sit beside their `TIMESTAMPTZ` columns with no constraint between them, so a record could carry `occurred_at` of `2026-09-30T03:00:00Z` beside an `occurred_at_ns` describing `2020-01-01T00:00:00Z` and every constraint would accept it. Worse, a consistency check **had** been written and then removed, on the reasoning at `0009:216` that it would produce false positives. That reasoning diagnosed a real caller defect (two independent clock samples) and drew the wrong conclusion from it, leaving the repository with two unreconcilable representations of when a record happened and no test able to tell. | Migration `0021` binds the pair to `common.ns_bound_to_timestamptz`. Because TIMESTAMPTZ is microsecond-resolution, the relationship is stated as **rounding to the nearest microsecond**, not equality — an equality that could never hold is presumably why the original check "failed" and was dropped. `common.ns_to_timestamptz` is the single definition used by the constraint and by consumers. The removed-check note at `0009` is retained and corrected rather than deleted, since deleting the record of a reversed decision would hide the reversal. | `TestNsToTimestamptzRoundsToTheNearestMicrosecond`, `TestARecordWhoseTimestampAndNanosecondsDisagreeIsRefused`, `TestASubMicrosecondNanosecondValueIsAcceptedWhenTheTimestampIsItsRounding` (mutations D/E/F) |
+| 20 | A guard function that nothing called. `common.assert_canonical_entropy` was fully written and reviewed but never invoked — a control present in the source and absent from the behaviour, the same shape as defect 15 (a comment) and the idle digest guard in `0017`. It contributed the appearance of a check while enforcing nothing. | Migration `0020` invokes the guard from inside the canonical encoder, so the entropy check is on the execution path rather than beside it. | `TestTheGoAndSQLCanonicalEncodersAgree` (mutation C) |
 
 ### Defect 13 in detail: three further defects found *inside* the fix
 
@@ -527,11 +553,25 @@ only the exit status, because a fully skipped suite also exits 0.
 
 This evidence does not cover, and does not claim:
 
-- Domain services, repositories, configuration service, audit hash/signing service
-  (G1 not yet implemented; only the schema and the canonical contracts exist).
-- Risk evaluation logic, OMS orchestration, ledger posting, reconciliation
-  execution — the schema permits only what the blueprint requires, but no service
-  has yet exercised the permitted paths in anger.
+- **Repositories, the configuration service, and the audit hash/signing service.**
+  These still do not exist. Note the change from the previous wording of this
+  bullet, which read "Domain services ... (G1 not yet implemented; only the
+  schema and the canonical contracts exist)". The domain layer is now
+  implemented — `domain/oms`, `domain/strategy`, `domain/halt` and
+  `domain/risk` — so that sentence was over-broad. What remains absent is the
+  *service* layer: nothing wires the domain logic to persistence.
+- **OMS orchestration, ledger posting, and reconciliation execution.** The
+  domain invariants they would enforce are implemented and tested; the services
+  that exercise them are G3 scope and are not started. The schema permits only
+  what the blueprint requires, but no service has yet exercised the permitted
+  paths in anger.
+- **The risk gate has never approved a real order.** It denies by default with
+  no limits configured (doc 17 §3 forbids the platform supplying numeric
+  limits), so the permissive path is covered only by unit tests.
+- **Doc 17 §3's persisted limit-document schema** is still unimplemented. The
+  `risk.Limit` type now defines the six required attributes and validates them,
+  which is the shape the persisted document needs, but no owner has supplied the
+  document schema itself.
 - API, market-data and venue adapters, the web application, worker processes.
 - Infrastructure: a Terraform tree, observability configuration, ten runbooks and a
   1 217-line live-activation guard exist, and the guard parses. None of it is
@@ -1043,7 +1083,105 @@ scope should fall, and the two directions have different kinds of cost; the
 choice and its reasoning are recorded in the migration header and in "Defect 15"
 above rather than left implicit in the SQL.
 
-### Outstanding after 0018
+### 0019 — the market schema stops being storage-only
+
+Defect 16, in full, is at `evidence/gates/G2/findings.md`. At the moment it was
+audited:
+
+```
+SELECT count(*) FROM pg_trigger
+ WHERE NOT tgisinternal AND tgrelid::regclass::text LIKE 'market.%';
+-- 0
+```
+
+Not one trigger, on any table, in the whole `market` schema. `0002` declares
+four safety controls in comments and implements none of them. This is the
+largest single finding in the project, and it survived seventeen green migration
+runs and a 231-test suite, because a migration that applies cleanly and a test
+that passes are both silent about whether a control exists.
+
+**Controls added**
+
+| Control | Table / function | Closes |
+|---|---|---|
+| `oms_order_instrument_terms_guard` | `oms.order` (BEFORE INSERT) | 16a — capabilities and increments at order creation |
+| `market.instrument_permits` | — | order type declared by the instrument; sell where shorting is unsupported |
+| `market.increment_multiple` | — | quantity and price on the increment grid, exactly, in NUMERIC |
+| `market.assert_order_terms_permitted` | — | the combined term gate |
+| `ops.assert_risk_increase_permitted` step 4 | — | 16a (liveness) — tradability at risk approval, not at creation |
+| `market.instrument_is_tradable` | — | 16b — the control the tautological CHECK only claimed |
+| `venue_symbol_append_only` | `market.venue_symbol` | 16d — an in-force mapping cannot be repointed, renamed, re-dated or deleted |
+| `feed_sequence_monotonic` | `market.feed_health` | 18 — a sequence watermark cannot move backwards |
+
+**Terms are checked once, liveness is checked twice.** `oms.guard_order_update`
+already makes order terms immutable, so a term validated at INSERT cannot become
+invalid later and needs no re-checking. `trading_status` is different: an
+instrument can be delisted between creation and risk approval, so tradability is
+re-checked at the risk boundary where `0013`, `0014` and `0018` already screen.
+`TestAnInstrumentThatStoppedTradingIsRefusedAtRiskApproval` creates the order
+against an `OPEN` instrument and delists it before risk approval, so the check
+cannot be satisfied by testing at creation alone.
+
+**Three deliberate decisions worth stating.**
+
+*Closing activity is not a short.* `market.instrument_permits` treats
+`REDUCE_ONLY` and `CLOSE_POSITION` as not-shorting even where
+`supports_shorting` is false. Selling to close an existing long is not opening
+short exposure, and a control that blocked it would trap exposure on exactly the
+instruments where closing matters most.
+
+*An unverifiable min_notional denies.* An instrument that declares
+`min_notional` and a market order with no price at submission: the floor cannot
+be evaluated, so the order is refused rather than admitted on the assumption
+that it will probably be large enough.
+
+*`UNKNOWN` denies, and the deny set is closed.* Only `OPEN` is tradable, so a
+state added to the enum later denies by default.
+`TestEveryNonOpenTradingStatusDenies` pins all eight non-`OPEN` states
+individually, so that claim is tested rather than asserted.
+
+**The shared test fixture had to change, and that is the point.** 171 existing
+tests failed against `0019` because `MustInsertInstrument` created an instrument
+with `order_types = [LIMIT]` and the default `trading_status = 'UNKNOWN'` —
+neither deliberate, because the columns were read by nothing and no test had a
+reason to care. The fixture was corrected rather than the migration relaxed. A
+shared fixture deliberately hobbled to dodge a control is precisely how a control
+ends up unenforced in production while every test is green. Tests that need a
+constrained instrument now build their own, so the constraint under test is
+visible in the test.
+
+**Mutation testing: 8/8 caught**, each by a distinct test
+(`db/mutate_0019.ps1`):
+
+| Mutation | Behaviour removed | Caught by |
+|---|---|---|
+| A | order type support | `TestAnOrderTypeTheInstrumentDoesNotSupportIsRefused` |
+| B | shorting support | `TestAShortAgainstANonShortableInstrumentIsRefused` |
+| C | increment grid | `TestAQuantityOffTheIncrementGridIsRefused` |
+| D | `min_notional` | `TestAnOrderBelowMinNotionalIsRefused` |
+| E | tradability at risk approval | `TestAnInstrumentThatStoppedTradingIsRefusedAtRiskApproval` |
+| F | in-force mapping repointed | `TestAnEffectiveVenueSymbolCannotBeRepointedAtAnotherInstrument` |
+| G | in-force mapping deleted | `TestAnEffectiveVenueSymbolCannotBeDeleted` |
+| H | sequence watermark rewind | `TestASequenceWatermarkCannotMoveBackwards` |
+
+Mutations H and defects 17 and 18 were found by independent review, not by this
+audit. That is the most useful thing in this section: the audit method found
+sixteen defects and then stopped finding them, and the review found three more
+immediately.
+
+**Defect 16c is deliberately still open.** `market.feed_health` and
+`market.freshness_policy` are still read by no risk path. Wiring them requires
+deciding whether a policy is selected by `market_class` alone, or also by
+`venue_id`, or also by `instrument_id` — a question no blueprint document
+answers, and one whose answers are not refinements of each other. The safe
+default (deny when no policy matches) is available under all three, which makes
+implementing it now tempting. It is not implemented now because doc 11:49
+requires that "all account-, venue-, instrument- and strategy-specific risk
+limits are configured and independently reviewed" before G11, and shipping a
+guessed scope rule would create the appearance of a reviewed control. **G2 does
+not pass.**
+
+### Outstanding after 0019
 
 - **Invariant 8 is only defence in depth.** The primary control is architectural
   and unimplemented: separate databases, secret stores, mTLS workload identity
@@ -1052,12 +1190,13 @@ above rather than left implicit in the SQL.
 - **A compromised but still-`ACTIVE` credential is not contained.** Registration
   and revocation are operator actions against an audited schema, not
   self-enforcing.
-- **`common.new_canonical_id` is not the Go bit layout** (0013). Alphabet, length
-  and 100 bits of entropy match; identifiers are opaque so the encodings may
-  differ by design.
 - **`audit.verify_checkpoint_signature_crypto` does not exist** (0012). Real
   signature verification requires the KMS/HSM; `audit.signing_key` stores only a
   provider reference.
+- ~~**`common.new_canonical_id` is not the Go bit layout** (0013).~~ **Closed by
+  `0020`.** The bullet previously ended "identifiers are opaque so the encodings
+  may differ by design" — an assumption that was never tested and turned out to
+  be false. See `0020` below.
 - **The halt and operational-mode gates cover the OMS order state machine only.**
   Neither is yet wired to the OMS submission path, order cancellation, or the
   risk-decision service, and neither is yet applied to `ledger.entry` or
@@ -1094,5 +1233,170 @@ above rather than left implicit in the SQL.
   That derivation service is **G3 scope** (doc 11 §17: "risk gate, OMS state
   machine, order invariants, halt behavior, ledger, and reconciliation tests"),
   not G1, and is not started.
-- **Independent review.** Everything in this document is self-attested. G1
-  evidence has not been reviewed by a second party.
+- **Independent review has now been performed once, and the gate is FAIL.**
+  A read-only review by an agent that did not author this document returned
+  FAIL: four blockers, six major findings. Three blockers were accepted and are
+  fixed (a tautological CHECK that shipped in `0002`, a mis-named sequence
+  constraint, and a verdict that claimed PASS). One blocker was **refuted** — the
+  reviewer reported that `mutate_0017.ps1` mutation G's anchor was absent from
+  `0017`, which would have made its 8/8 claim unreproducible. The anchor is
+  present at `0017:290`; the harness was re-run and reproduced 8/8, each mutation
+  caught by its named test. The full disposition table is in
+  `evidence/gates/G1/g1-report.md`. One review has not made this evidence
+  independently verified in general — it made it correct once.
+- **`occurred_at_ns` / `recorded_at_ns` are stored beside their `TIMESTAMPTZ`
+  columns with no cross-check.** A consistency check was written and then removed
+  because it produced false positives. The nanosecond columns are therefore not
+  bound to the timestamps they claim to refine, and no test asserts the Go
+  `TimestampLayout` matches the database storage format.
+---
+
+## 0020 — canonical ID bit-layout parity across the Go/PostgreSQL boundary
+
+`0020` closes the last remaining canonical-contract divergence, and it is a
+divergence that had been documented as a design choice rather than tested as one.
+
+### What the two implementations actually did
+
+| | `contracts.NewID` (Go) | `common.new_canonical_id` (0013) |
+|---|---|---|
+| Character source | 5 bits at a time from a big-endian bit stream | `get_byte(b,i) / 8` |
+| Bits consumed per character | 5, aligned to the stream | 5, from the low bits of each byte |
+| Characters emitted | 20 | 20 |
+| Entropy | 100 bits | 100 bits |
+| `is_canonical_id` | pass | pass |
+
+Both are valid 20-character Crockford Base32 strings over
+`0123456789abcdefghjkmnpqrstvwxyz` with 100 bits of entropy, and both pass the
+schema's own `is_canonical_id` check. Neither produces the other's values. The
+migration described the SQL function as "the SQL twin of `contracts.NewID`",
+which was not true.
+
+The previous evidence bullet closed with "identifiers are opaque so the encodings
+may differ by design". That is the kind of sentence that is unfalsifiable until
+someone writes the test — and the test is trivial, so not writing it was a
+choice with a cost, not a neutral position.
+
+### The fix
+
+`0020` rewrites the SQL encoder to mirror `contracts.encodeCrockford` step for
+step: expand the entropy bytes into a most-significant-bit-first stream, then
+take five bits at a time. `contracts.IDFromBytes` was added so the encoding can
+be driven from fixed entropy rather than from randomness, which is what makes a
+parity assertion possible at all.
+
+`TestTheGoAndSQLCanonicalEncodersAgree` pins the two implementations against each
+other over 8 fixed vectors — all-zero, all-one, ascending, descending, a lone
+high bit, a lone low bit, alternating nibbles, and a 0..15 walk — crossed with
+all 29 entity types, so 232 encoder comparisons run per test. A single
+agreement vector would not have caught a bit-order regression; a lone high bit
+and a lone low bit catch opposite failure modes, which is why both are present.
+
+### Mutation testing
+
+`db/mutate_0020_0021.ps1`, `db/mutate_domain.ps1` mutation A reverts the SQL encoder to the pre-0020
+per-byte mapping; mutation B reverses the bit order within each character group.
+Both are caught. The test fails on the real defect it was written for.
+
+### The control that was never called
+
+Mutation C restores an earlier state of the file in which
+`common.assert_canonical_entropy` existed as a fully-formed function that
+**nothing invoked** — the same shape as defect 15, where the safety control was
+a comment rather than code, and as the idle guard in `0017`. A guard that is
+written, reviewed, and never called provides the appearance of a control while
+contributing none. The guard is now invoked from inside the encoder, so the
+entropy check is on the path rather than beside it.
+
+This is the fourth time mutation testing has found a control that was present in
+the source and absent from the behaviour, which is the strongest argument in this
+project for keeping the mutation suite. Reading the source does not surface this
+class of defect; disabling the control and re-running does.
+
+---
+
+## 0021 — the nanosecond/timestamp binding
+
+`occurred_at_ns` and `recorded_at_ns` sit beside their `TIMESTAMPTZ` columns with
+nothing connecting them. A record could carry `occurred_at` of
+`2026-09-30T03:00:00Z` beside an `occurred_at_ns` describing
+`2020-01-01T00:00:00Z`, and every constraint in the schema would accept it.
+
+### The check that had been written and removed
+
+`0009:216` carried this note on `audit.append_record`:
+
+> this function deliberately does NOT cross-check `p_occurred_at_ns` against
+> `p_occurred_at` ... a caller that samples the clock for the nanosecond value and
+> then lets the statement fill the TIMESTAMPTZ from `now()` samples the clock
+> twice, so a real, correct record trips the check by the round-trip time.
+
+The diagnosis is correct. The conclusion drawn from it was not. The check was
+sound; the callers were unsound. A caller that samples the clock twice and then
+expects the two samples to agree has produced an unbound pair, and the available
+responses are to bind the pair to one sample or to state the relationship
+precisely — not to delete the only mechanism that could have reported the
+mistake. The note also concluded "nothing is lost by omitting it", on the grounds
+that the hash is computed over the nanoseconds so a verifier reaches the same
+hash either way. That is true about the *hash* and irrelevant to the *record*:
+an operator querying evidence by time, or a verifier ordering by
+`occurred_at`, gets a different answer from the one the ns column holds.
+
+`0021` keeps the note, corrects the conclusion, and binds the pair. The comment
+at `0009` is retained rather than deleted because the reasoning is instructive
+and because deleting the record of a reversed decision would hide the reversal.
+
+### Rounding, not equality
+
+TIMESTAMPTZ has microsecond resolution. An equality constraint between a
+nanosecond value and a TIMESTAMPTZ could never hold, which is presumably why the
+check "failed" and was removed. The true relationship is:
+
+> the TIMESTAMPTZ is the nanosecond value rounded to the nearest microsecond.
+
+`common.ns_to_timestamptz` is that single definition, used by the constraint, by
+the Go fixtures, and by any consumer. The Go side is `NsToTimestamptz`, pinned by
+`TestNsToTimestamptzRoundsToTheNearestMicrosecond` against a hand-computed
+boundary case.
+
+Rounding is used rather than truncation deliberately: 123457789ns truncates to
+.123457 and rounds to .123458, and a record that reads back as a *different*
+nanosecond than the one stored would reintroduce, in a smaller way, exactly the
+divergence this migration exists to close. Mutation D replaces the rounding with
+truncation and is caught.
+
+### What binding the pair exposed
+
+The constraint could not be written correctly on the first attempt, and the way it
+failed is worth recording. The first version used a `void`-returning function
+(`common.ns_bound_to_timestamptz(...)`) with `CHECK (assert(...) IS NULL)`. A
+void value is never `NULL`, so that check was false for **every row** — the
+migration would have applied cleanly, created the constraint, and enforced
+nothing. The fix returns a predicate. A check is a predicate; a void function
+called in a check position is a check that is always false, and a constraint that
+is always false fails closed loudly in testing but would be indistinguishable
+from "no data" in production.
+
+Binding the pair also exposed a live defect in the fixtures themselves. The shared
+audit fixture passed `NowNs()` from Go for `occurred_at_ns` while PostgreSQL
+filled `occurred_at` from its own `now()` — two clock reads, microseconds apart,
+disagreeing, and accepted for as long as they existed. The same two-clock pattern
+appeared in two further audit fixtures. All three now derive both columns from a
+single instant. This is precisely the caller defect the removed check had
+described, which is the strongest available confirmation that the original
+diagnosis was right and only the remedy was wrong.
+
+### Mutation testing
+
+`db/mutate_0020_0021.ps1`, `db/mutate_domain.ps1` covers both migrations: A (pre-0020 per-byte encoding),
+B (reversed bit order), C (uncalled entropy guard), D (`round` → `trunc`),
+E (dropped CHECK constraint), F (default `occurred_at` of `now()` restored).
+**6/6 caught.**
+
+An earlier run of the same suite reported mutation D surviving. That report was
+wrong and the suite was rerun from a clean migration state; the observed cause
+was that the sub-microsecond fixture had not yet been corrected, so the mutant
+was accidentally still satisfiable. The corrected suite catches it. A mutation
+result that disagrees with a direct check is a question about the harness, not
+about the mutant, and it was resolved by re-deriving the result rather than by
+accepting the first number.

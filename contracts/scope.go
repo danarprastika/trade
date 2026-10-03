@@ -417,12 +417,29 @@ const (
 	OrderClosePosition OrderType = "CLOSE_POSITION"
 )
 
+// OrderTypes returns the whole order-type vocabulary, in the declaration order.
+//
+// Exported so the Go-to-SQL parity test can compare this list against
+// common.order_type without restating it. A hand-copied list in a test is a
+// second copy of the vocabulary: adding an order type to the constants above and
+// forgetting the test copy leaves the test passing against a vocabulary the
+// service no longer implements, which is the drift the test exists to catch.
+func OrderTypes() []OrderType {
+	return []OrderType{
+		OrderMarket, OrderLimit, OrderStop, OrderStopLimit, OrderPostOnly,
+		OrderIOC, OrderFOK, OrderReduceOnly, OrderClosePosition,
+	}
+}
+
 // Valid reports membership of the closed order-type set.
+//
+// Written in terms of OrderTypes rather than as a second literal list, so there
+// is exactly one place that says what the vocabulary is.
 func (o OrderType) Valid() bool {
-	switch o {
-	case OrderMarket, OrderLimit, OrderStop, OrderStopLimit, OrderPostOnly,
-		OrderIOC, OrderFOK, OrderReduceOnly, OrderClosePosition:
-		return true
+	for _, t := range OrderTypes() {
+		if o == t {
+			return true
+		}
 	}
 	return false
 }
@@ -450,11 +467,20 @@ const (
 	TIFGTX TimeInForce = "GTX"
 )
 
-// Valid reports membership of the closed time-in-force set.
+// TimeInForces returns the whole time-in-force vocabulary, in declaration order.
+// Exported for the same reason as OrderTypes: so the parity test compares this
+// list against common.time_in_force rather than a hand-copied second copy.
+func TimeInForces() []TimeInForce {
+	return []TimeInForce{TIFGTC, TIFDAY, TIFIOC, TIFFOK, TIFGTX}
+}
+
+// Valid reports membership of the closed time-in-force set, in terms of the one
+// list that defines the vocabulary.
 func (t TimeInForce) Valid() bool {
-	switch t {
-	case TIFGTC, TIFDAY, TIFIOC, TIFFOK, TIFGTX:
-		return true
+	for _, v := range TimeInForces() {
+		if t == v {
+			return true
+		}
 	}
 	return false
 }

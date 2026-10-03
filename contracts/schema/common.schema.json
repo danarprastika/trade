@@ -6,11 +6,13 @@
   "$defs": {
     "entityType": {
       "type": "string",
-      "description": "Closed set of canonical identifier prefixes. An unknown value is unsupported and must never be silently mapped. This set is kept identical to contracts.EntityTypes() by TestSchemaFileDeclaresSameVocabulariesAsGo; a prefix listed here with no Go counterpart mints identifiers that ParseID rejects.",
+      "description": "Closed set of canonical identifier prefixes. An unknown value is unsupported and must never be silently mapped. This set is kept identical to contracts.EntityTypes() by TestSchemaFileDeclaresSameVocabulariesAsGo; a prefix listed here with no Go counterpart mints identifiers that ParseID rejects, and the dbtest prefix test fails the other way round when the schema demands a prefix this file omits.",
       "enum": [
-        "acc", "agt", "apr", "art", "aud", "cfg", "cmd", "dqt", "dst",
-        "elg", "evt", "exp", "fil", "flt", "hlt", "inc", "ins", "led", "mkt",
-        "mdl", "ord", "pol", "pos", "rec", "rsk", "run", "ses", "str", "ven"
+        "acc", "act", "agt", "apr", "art", "aud", "bal", "cfg", "ckp",
+        "cmd", "dep", "dqt", "dst", "edl", "elg", "evt", "exp", "fil",
+        "flt", "hlt", "inc", "ins", "jnl", "led", "mdl", "mkt", "oe1",
+        "ord", "pol", "pos", "rck", "rec", "rsk", "run", "sbm", "ses",
+        "str", "sys", "trn", "ven", "wid"
       ]
     },
     "canonicalId": {

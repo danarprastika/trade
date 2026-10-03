@@ -1053,7 +1053,7 @@ func TestAuditChainRejectsSequenceGap(t *testing.T) {
 		// and the test would pass without ever exercising the control it names.
 		err := dbtest.ExpectRejected(t, ctx, tx, `
             SELECT audit.append_record($1,$2,3,'owner','actor-1','SYSTEM','test.action',
-                'order',$3,'paper',NULL,now(),$4,now(),$4,'reason','cor',NULL,'v1','SUCCESS',
+                'order',$3,'paper',NULL,common.ns_to_timestamptz($4),$4,common.ns_to_timestamptz($4),$4,'reason','cor',NULL,'v1','SUCCESS',
                 NULL,NULL,'{}'::jsonb,'key-1','1.0.0',NULL)`,
 			dbtest.CanonicalID("aud", 341), part, dbtest.CanonicalID("ord", 342),
 			dbtest.NowNs())
@@ -1388,7 +1388,7 @@ func TestDirectAuditInsertIsRejected(t *testing.T) {
                 correlation_id, policy_version, result, details,
                 previous_hash, record_hash, signing_key_id, canonical_schema_version)
             VALUES ($1,$2,99,'owner','attacker','SYSTEM','test.action','order','ord_x','paper',
-                    now(),$3,now(),$3,'cor','v1','SUCCESS','{}'::jsonb,
+                    common.ns_to_timestamptz($3),$3,common.ns_to_timestamptz($3),$3,'cor','v1','SUCCESS','{}'::jsonb,
                     $4,$4,'key-1','1.0.0')`,
 			dbtest.CanonicalID("aud", 441), part, dbtest.NowNs(), strings.Repeat("f", 64))
 		if !strings.Contains(err.Error(), "audit.append_record") {
@@ -1422,9 +1422,18 @@ func TestAuditPartitionIsCreatedOnDemandBeyondTheStaticRange(t *testing.T) {
 
 func MustAppendAuditAt(t *testing.T, ctx context.Context, tx *sql.Tx, part string, seq int, recordedAt time.Time) {
 	t.Helper()
-	// The recorded_at timestamp and its nanosecond companion are separate
-	// parameters: sharing one placeholder makes PostgreSQL deduce two
-	// incompatible types for it.
+	// occurred_at/occurred_at_ns and recorded_at/recorded_at_ns are each a
+	// bound pair, so both timestamps and both nanosecond values are derived
+	// from the one recordedAt instant. They are separate placeholders because
+	// sharing one placeholder makes PostgreSQL deduce two incompatible types
+	// for it.
+	//
+	// This fixture previously passed SQL now() for occurred_at and a separate
+	// Go time.Now() for occurred_at_ns -- two different instants, microseconds
+	// apart. Nothing rejected that until 0021 bound the pair, which is a fair
+	// illustration of what an unbound column pair means in practice: two
+	// apparently reasonable lines of test code that quietly disagree about
+	// when the event happened.
 	//
 	// The hash argument is NULL so the DATABASE computes record_hash from the
 	// canonical payload. A fabricated hash is rejected outright by the
@@ -1432,10 +1441,10 @@ func MustAppendAuditAt(t *testing.T, ctx context.Context, tx *sql.Tx, part strin
 	// audit_canonical_test.go rather than implicitly by unrelated tests.
 	if _, err := tx.ExecContext(ctx, `
         SELECT audit.append_record($1,$2,$3,'owner','actor-1','SYSTEM','test.action',
-            'order',$4,'paper',NULL,now(),$5,$6,$7,'reason','cor',NULL,'v1','SUCCESS',
+            'order',$4,'paper',NULL,$5,$6,$5,$6,'reason','cor',NULL,'v1','SUCCESS',
             NULL,NULL,'{}'::jsonb,'key-1','1.0.0',NULL)`,
 		dbtest.CanonicalID("aud", seq*7+1), part, seq, dbtest.CanonicalID("ord", seq*13+2),
-		dbtest.NowNs(), recordedAt, recordedAt.UnixNano()); err != nil {
+		recordedAt, recordedAt.UnixNano()); err != nil {
 		t.Fatalf("append audit record %d into %s: %v", seq, part, err)
 	}
 }
@@ -1544,12 +1553,30 @@ func TestDualControlStrategyTransitionRequiresALiveApproval(t *testing.T) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// MustInsertInstrument inserts the ordinary, fully capable, currently tradable
+// instrument that the rest of the suite assumes.
+//
+// Before migration 0019 this inserted an instrument with order_types = [LIMIT]
+// and the default trading_status of UNKNOWN. Neither was deliberate: the
+// columns were never read by anything, so no test had a reason to care. 0019
+// makes both load-bearing, and 171 tests failed against the old fixture.
+//
+// The fixture is therefore corrected here rather than relaxed in the migration.
+// A shared fixture that is deliberately hobbled to dodge a control is how a
+// control ends up unenforced in production while every test is green. Tests
+// that need a constrained instrument -- one that cannot be shorted, one that is
+// halted, one that supports only LIMIT -- build their own, so that the
+// constraint under test is visible in the test rather than hidden in a helper.
 func MustInsertInstrument(t *testing.T, ctx context.Context, tx *sql.Tx, id string) {
 	t.Helper()
 	if _, err := tx.ExecContext(ctx, `
         INSERT INTO market.instrument (instrument_id, market_class, base, quote,
-            min_quantity, price_increment, tick_size, order_types)
-        VALUES ($1,'crypto','BTC','USDT', 0.00000001, 0.01, 0.01, ARRAY['LIMIT']::common.order_type[])`,
+            min_quantity, price_increment, tick_size, order_types,
+            supports_shorting, trading_status)
+        VALUES ($1,'crypto','BTC','USDT', 0.00000001, 0.01, 0.01,
+                ARRAY['MARKET','LIMIT','STOP','STOP_LIMIT','POST_ONLY','IOC','FOK',
+                      'REDUCE_ONLY','CLOSE_POSITION']::common.order_type[],
+                true, 'OPEN')`,
 		id); err != nil {
 		t.Fatalf("insert instrument %s: %v", id, err)
 	}
@@ -1592,7 +1619,7 @@ func MustAppendAuditWithID(t *testing.T, ctx context.Context, tx *sql.Tx, part, 
 	t.Helper()
 	if _, err := tx.ExecContext(ctx, `
         SELECT audit.append_record($1,$2,$3,'owner','actor-1','SYSTEM','test.action',
-            'order',$4,'paper',NULL,now(),$5,now(),$5,'reason','cor',NULL,'v1','SUCCESS',
+            'order',$4,'paper',NULL,common.ns_to_timestamptz($5),$5,common.ns_to_timestamptz($5),$5,'reason','cor',NULL,'v1','SUCCESS',
             NULL,NULL,'{}'::jsonb,'key-1','1.0.0',NULL)`,
 		auditID, part, seq, dbtest.CanonicalID("ord", seq*13+2), dbtest.NowNs()); err != nil {
 		t.Fatalf("append audit record %d: %v", seq, err)
@@ -1810,8 +1837,39 @@ func MustOrderAt(t *testing.T, ctx context.Context, tx *sql.Tx, ins string, seed
 	MustAttachRiskDecision(t, ctx, tx, order, dbtest.CanonicalID("rsk", seed+50))
 	for i, h := range path {
 		MustTransition(t, ctx, tx, order, h.to, h.kind, seed+100+i)
+		// The outbox row is the other half of what Command.Prepare commits, and since
+		// migration 0024 the database refuses an order that reaches SUBMITTING without
+		// one. This helper exists to put an order into a state, so it has to perform
+		// the transition the way the real command does rather than reaching past the
+		// guard -- a fixture that seeded SUBMITTING directly would have been testing a
+		// shape the schema now forbids, and would have kept passing while the real
+		// pairing went untested.
+		if h.to == "SUBMITTING" {
+			mustOutboxForSubmitting(t, ctx, tx, order, seed+200+i)
+		}
 	}
 	return order
+}
+
+// mustOutboxForSubmitting writes the durable outbox row that doc 05 pairs with a
+// transition to SUBMITTING, using the same shape Command.Prepare writes.
+//
+// The aggregate_type is deliberately written lower case. domain/execution writes
+// 'ORDER' and this writes 'order', and both are accepted: the column is unconstrained
+// free text and migration 0025 moved the guard off that literal for exactly this
+// reason. Keeping the disagreement visible in a fixture is what would catch a future
+// migration deciding to constrain the column without noticing both spellings.
+func mustOutboxForSubmitting(t *testing.T, ctx context.Context, tx *sql.Tx, order string, seed int) {
+	t.Helper()
+	dbtest.MustExec(t, ctx, tx, `
+		INSERT INTO ops.outbox (
+			event_id, event_type, schema_version, aggregate_type, aggregate_id,
+			sequence, correlation_id, producer_id, environment,
+			occurred_at, occurred_at_ns, recorded_at, payload,
+			dispatch_state, attempt_count, max_attempts)
+		VALUES ($1,'order.submitting','1.0.0','order',$2,1,'cor','dbtest-fixture','paper',
+		        now(),$3,now(),'{}','PENDING',0,5)`,
+		dbtest.CanonicalID("evt", seed), order, dbtest.NowNs())
 }
 
 // MustExpectTransitionRejected attempts a complete, legal-shaped transition and

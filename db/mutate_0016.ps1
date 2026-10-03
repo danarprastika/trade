@@ -11,10 +11,21 @@
 # are run. The original file is always restored.
 
 param(
-    [string]$Container = 'aitc-pg17'
+    [string]$Container = 'aitc-pg17',
+    [string]$Database = 'aitc'
 )
 
 $ErrorActionPreference = 'Stop'
+
+# This script DROPS every schema and re-applies the migration series once per
+# mutation, so it must only ever be pointed at a disposable database. migrate.ps1
+# refuses a database whose name looks like production; these mutations bypass
+# that check by dropping schemas directly, so the guard is repeated on both
+# halves of the target here.
+if ($Container -ne 'aitc-pg17' -or $Database -ne 'aitc') {
+    throw "mutate_0016 rewrites and re-applies the whole migration series, which drops every schema. It refuses to run against '$Container'/'$Database': only the local disposable pair aitc-pg17/aitc is permitted. Point it at that container, or edit this guard deliberately if you have another disposable target."
+}
+
 $migration = Join-Path $PSScriptRoot '..\db\migrations\0016_position_reconciles_to_validated_fills.sql'
 $backup = "$migration.orig"
 $env:AITC_TEST_DATABASE_URL = 'postgres://postgres:aitc_local_dev_only@localhost:55439/aitc?sslmode=disable'
@@ -33,39 +44,47 @@ function Invoke-Mutation {
     Write-Host "=== MUTATION: $Name ==="
     Write-Host "    $Description"
 
-    Copy-Item -LiteralPath $backup -Destination $migration -Force
-    $source = [System.IO.File]::ReadAllText($migration, [System.Text.Encoding]::UTF8)
-    $mutated = & $Mutate $source
-    if ($mutated -eq $source) {
-        Write-Host "    !! the mutation did not change the file -- the pattern did not match"
-        return $false
+    # Restored in a finally block so an exception thrown by the file write or by
+    # PowerShell itself still leaves the original bytes in place. A mutant that
+    # outlives its run makes the next migrate.ps1 report DRIFT against a file
+    # nobody remembers editing.
+    try {
+        Copy-Item -LiteralPath $backup -Destination $migration -Force
+        $source = [System.IO.File]::ReadAllText($migration, [System.Text.Encoding]::UTF8)
+        $mutated = & $Mutate $source
+        if ($mutated -eq $source) {
+            Write-Host "    !! the mutation did not change the file -- the pattern did not match"
+            return $false
+        }
+        [System.IO.File]::WriteAllText($migration, $mutated, (New-Object System.Text.UTF8Encoding($false)))
+
+        $apply = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot '..\db\migrate.ps1') -Container $Container -Database $Database -Reset 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "    migration failed to apply: $apply"
+            return $false
+        }
+
+        $out = & go test ./dbtest/... -count=1 -run 'Position|Fill' 2>&1
+        $failed = @(Select-String -InputObject ($out -join "`n") -Pattern '^\s*--- FAIL: (\w+)' -AllMatches |
+            ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+
+        if ($failed.Count -eq 0) {
+            Write-Host "    RESULT: no test failed -- the removed behaviour was NOT load-bearing"
+            return $false
+        }
+
+        Write-Host "    RESULT: caught. Failing tests:"
+        foreach ($f in $failed) { Write-Host "      - $f" }
+
+        $unrelated = @($failed | Where-Object { $_ -notmatch $MustFailPattern })
+        if ($unrelated.Count -gt 0) {
+            Write-Host "    !! over-broad: also failed tests outside '$MustFailPattern': $($unrelated -join ', ')"
+            return $false
+        }
+        return $true
+    } finally {
+        Copy-Item -LiteralPath $backup -Destination $migration -Force
     }
-    [System.IO.File]::WriteAllText($migration, $mutated, (New-Object System.Text.UTF8Encoding($false)))
-
-    $apply = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot '..\db\migrate.ps1') -Container $Container -Reset 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "    migration failed to apply: $apply"
-        return $false
-    }
-
-    $out = & go test ./dbtest/... -count=1 -run 'Position|Fill' 2>&1
-    $failed = @(Select-String -InputObject ($out -join "`n") -Pattern '^\s*--- FAIL: (\w+)' -AllMatches |
-        ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
-
-    if ($failed.Count -eq 0) {
-        Write-Host "    RESULT: no test failed -- the removed behaviour was NOT load-bearing"
-        return $false
-    }
-
-    Write-Host "    RESULT: caught. Failing tests:"
-    foreach ($f in $failed) { Write-Host "      - $f" }
-
-    $unrelated = @($failed | Where-Object { $_ -notmatch $MustFailPattern })
-    if ($unrelated.Count -gt 0) {
-        Write-Host "    !! over-broad: also failed tests outside '$MustFailPattern': $($unrelated -join ', ')"
-        return $false
-    }
-    return $true
 }
 
 $results = @{}
@@ -125,13 +144,14 @@ $results['E'] = Invoke-Mutation -Name 'E: stale watermark accepted' `
         $s -replace 'IS DISTINCT FROM v_max_seq', '> 1000000000'
     }
 
-Copy-Item -LiteralPath $backup -Destination $migration -Force
-Remove-Item -LiteralPath $backup -Force
-
 Write-Host ""
-Write-Host "=== RESTORED ==="
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot '..\db\migrate.ps1') -Container $Container -Reset 2>&1 |
+Write-Host "=== RESTORED (original bytes back, schema rebuilt from them) ==="
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot '..\db\migrate.ps1') -Container $Container -Database $Database -Reset 2>&1 |
     Select-String -Pattern 'applied_now'
+
+# The backup is removed only after the schema has been rebuilt from the restored
+# file. Removing it earlier would leave no way back if the rebuild failed.
+Remove-Item -LiteralPath $backup -Force
 
 $caught = @($results.Keys | Where-Object { $results[$_] })
 $missed = @($results.Keys | Where-Object { -not $results[$_] })

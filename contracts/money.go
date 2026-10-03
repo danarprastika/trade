@@ -302,6 +302,69 @@ func (d Decimal) Neg() Decimal {
 	return Decimal{coef: new(big.Int).Neg(d.coeff()), scale: d.scale}
 }
 
+// divGuardDigits is how much extra precision Div computes before rounding.
+//
+// Division is the only arithmetic here that does not terminate exactly: 1/3 has
+// no finite decimal expansion. The quotient is therefore computed at
+// targetScale + guard digits and then rounded to targetScale, so that
+// RoundTruncate and the rounding modes see the digits just below the target
+// rather than an already-truncated value. Computing directly at targetScale and
+// rounding afterwards would make every mode except Truncate a no-op.
+const divGuardDigits = 8
+
+// Div divides d by o and returns the quotient at targetScale, rounded by mode.
+//
+// Division needs a scale and a mode where the other operations do not, because
+// the result is not exact. Both are explicit arguments for that reason: a
+// Div that picked its own scale would make the caller's precision decision
+// invisibly, and the two callers here divide into columns with declared
+// precisions -- max_drawdown and max_concentration are both NUMERIC(12,8), so
+// eight places is the target those columns can actually hold.
+//
+// Dividing by zero returns an error rather than an infinity, because the callers
+// are risk measurements where a divide-by-zero is a data defect to be reported
+// and not an arithmetic result to be propagated.
+func (d Decimal) Div(o Decimal, targetScale int32, mode RoundingMode) (Decimal, error) {
+	if o.coeff().Sign() == 0 {
+		return Decimal{}, fmt.Errorf("contracts: division by zero")
+	}
+	guard := targetScale + divGuardDigits
+	if guard > DecimalScaleLimit {
+		return Decimal{}, fmt.Errorf("%w: division guard scale %d", ErrScaleOverflow, guard)
+	}
+
+	// d = a/10^s and o = b/10^t, so
+	//
+	//	d/o = (a/b) * 10^(t-s)
+	//
+	// and at `guard` places the numerator carries 10^(t-s+guard) on top of a.
+	// When that exponent is negative the factor belongs to the denominator, so
+	// the power is moved across rather than dropped.
+	//
+	// The scale difference cannot be assumed away. An earlier version wrote the
+	// quotient as a*10^guard/b on the reasoning that the denominator's scale
+	// cancels against the numerator's -- true only when s == t. With s=0, t=1 it
+	// computed 1/0.1 as 1 rather than 10, and every value whose scales differed
+	// came back wrong by a power of ten. Two risk measurements divide unlike
+	// scales (drawdown by peak equity, concentration by gross exposure), so this
+	// was a corrupted figure compared against a limit, not a display defect.
+	numer := new(big.Int).Set(d.coeff())
+	denom := new(big.Int).Set(o.coeff())
+	if shift := o.scale - d.scale + guard; shift >= 0 {
+		numer.Mul(numer, pow10(shift))
+	} else {
+		denom.Mul(denom, pow10(-shift))
+	}
+	numer.Quo(numer, denom)
+
+	return Decimal{coef: numer, scale: guard}.Round(targetScale, mode)
+}
+
+// pow10 returns 10^n as a big.Int, for n >= 0.
+func pow10(n int32) *big.Int {
+	return new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(n)), nil)
+}
+
 // Abs returns |d|.
 func (d Decimal) Abs() Decimal {
 	return Decimal{coef: new(big.Int).Abs(d.coeff()), scale: d.scale}

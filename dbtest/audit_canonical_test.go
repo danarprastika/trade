@@ -228,7 +228,7 @@ func TestAuditAppendAcceptsCorrectSuppliedHash(t *testing.T) {
 
 		if _, err := tx.ExecContext(ctx, `
             SELECT audit.append_record($1,$2,1,'owner-1','actor-1','SYSTEM','test.accepted',
-                'order',$3,'paper',NULL,now(),$4,now(),$4,'because','cor-1',NULL,'v1','SUCCESS',
+                'order',$3,'paper',NULL,common.ns_to_timestamptz($4),$4,common.ns_to_timestamptz($4),$4,'because','cor-1',NULL,'v1','SUCCESS',
                 NULL,NULL,$5::jsonb,'key-1','1.0.0',$6)`,
 			auditID, part, dbtest.CanonicalID("ord", 902), occurred, details, expected); err != nil {
 			t.Fatalf("a correctly computed hash was rejected: %v", err)
@@ -256,7 +256,7 @@ func TestAuditAppendRejectsDisagreeingSuppliedHash(t *testing.T) {
 		forged := strings.Repeat("a", 64)
 		err := dbtest.ExpectRejected(t, ctx, tx, `
             SELECT audit.append_record($1,$2,1,'owner-1','actor-1','SYSTEM','test.forged',
-                'order',$3,'paper',NULL,now(),$4,now(),$4,'because','cor-1',NULL,'v1','SUCCESS',
+                'order',$3,'paper',NULL,common.ns_to_timestamptz($4),$4,common.ns_to_timestamptz($4),$4,'because','cor-1',NULL,'v1','SUCCESS',
                 NULL,NULL,'{}'::jsonb,'key-1','1.0.0',$5)`,
 			dbtest.CanonicalID("aud", 911), part, dbtest.CanonicalID("ord", 912),
 			dbtest.NowNs(), forged)
