@@ -49,9 +49,28 @@ It checks function bodies against `pg_proc.prosrc`, and for triggers their exist
 powershell -NoProfile -ExecutionPolicy Bypass -File db/verify-schema-live-mutations.ps1
 ```
 
-A gate that has only ever run against a correct schema has demonstrated nothing — it would report `drift=0` just as happily against a database with every index dropped. This harness mutates each dimension in turn and asserts the gate notices, restoring the database and verifying the restore is byte-identical after every case. It currently asserts 20 of 20, and it refuses to report success unless both the gate and `db/migrate.ps1` are green at the end.
+A gate that has only ever run against a correct schema has demonstrated nothing — it would report `drift=0` just as happily against a database with every index dropped. This harness mutates each dimension in turn and asserts the gate notices, restoring the database and verifying the restore is byte-identical after every case. It asserts **25 of 25** mutations detected with `not_detected=0`, and it refuses to report success unless both the gate and `db/migrate.ps1` are green at the end.
 
-Two of its cases are negative controls, and they are the reason the others mean anything: one asserts that a `NOT VALID` constraint which migration 0023 genuinely declares unvalidated is *not* reported, and one asserts that a trigger dropped and recreated inside a single migration is *not* reported as missing. A detector that flags everything would pass every positive case.
+It covers five dimensions: **function bodies** (altered, dollar-sign signature, undeclared-but-live, unparseable-declaration, plus a negative control), **indexes** (dropped, wrong table, uniqueness lost, wrong columns, invalid, undeclared, unparseable), **constraints** (dropped, type changed, silently unvalidated, unattributable, plus a negative control), **triggers** (dropped, wrong function, disabled, undeclared, plus a negative control), and a **self-test** of the harness's own SQL transport.
+
+Three of these are negative controls, and they are the reason the others mean anything: one asserts that a `NOT VALID` constraint which migration 0023 genuinely declares unvalidated is *not* reported; one asserts that a trigger dropped and recreated inside a single migration is *not* reported as missing; and one asserts the function dimension stays silent against a correct database, by requiring `compared_functions == expected_functions` — the arithmetic that would expose a comparison silently skipping functions it could not match. A detector that flags everything would pass every positive case.
+
+#### Reading psql output inside the harness
+
+The harness's own result handling has failed in three distinct ways, each of which looked like a detector defect rather than a harness defect. All three are now guarded in code, and they are recorded here because the guard is invisible until you have been bitten by it.
+
+- **`Out-String` must never be used to format psql output in the harness.** It wraps long single-line values at the console width — measured at 60 on this host — inserting newlines into the middle of the value it is meant to pass through. It corrupted the harness twice, in ways that appeared unrelated. A 1802-character hex string came back as 1832 characters, so a correctly restored 901-byte body was reported as 916 bytes and judged unequal to its own original, failing the restore check on a byte-perfect restore. And it formatted the *gate's* text, splitting the long `PARSE_INCOMPLETE` sentence across lines so that no single-line pattern could ever match it — while the cases whose expected patterns were short kept passing and hid the cause. Every wrapper joins psql's lines with `` `n `` instead.
+- **Never read a body with `SELECT p.prosrc`.** `Invoke-SqlBytes` ends in `.Trim()`, so it returns a value that looks like the body but is not the stored bytes: this repository's function bodies begin and end with a newline, so the read returned 901 bytes for a 903-byte `prosrc`, and a restore built from it silently dropped two. Read the body as hex and decode it instead — hex has no whitespace to normalise and no line to break.
+- **A restore is verified by comparing hex, never by comparing strings.** A trimmed string comparison reported two lossy restores as byte-identical, which is the failure mode the whole restore check exists to prevent.
+
+#### Writing SQL that changes a function body
+
+Two transport hazards apply, and both have destroyed a restore:
+
+- `psql -c` cannot be used for a multi-line function definition. It collapses the newlines, which is how a dollar-quoted body arrives unterminated. Trigger, index and constraint mutations are single-line and demonstrably unaffected, so they still use it.
+- PowerShell's native-stdin path is text-mode, so `| psql -f -` rewrites every embedded LF to CRLF. A restored `prosrc` came back at the same length with different bytes, which is worse than an obvious mismatch because it reads like success.
+
+The harness therefore writes the SQL to a BOM-less UTF-8 file, `docker cp`s it, and runs `psql -f`. `ON_ERROR_STOP=1` is required there: psql reading a script continues past a failed statement and exits `0`, so a mutation that did not apply would be indistinguishable from one the detector did not catch.
 
 ### Also
 

@@ -17,9 +17,13 @@
 # Indexes (M1-M7) and named constraints (C1-C5) were covered from the start. Triggers
 # (T1-T5) were added when the gate's trigger walk was fixed to read each file's statements in
 # order -- a change that could have turned the trigger section into a no-op just as silently as
-# the bug it fixed. A dimension with only positive cases cannot distinguish a working detector
-# from one that reports everything, so each dimension ends with a negative control: C5 (a
-# constraint migration 0023 declares deliberately unvalidated must NOT be reported) and T5 (a
+# the bug it fixed. Functions (F1-F5) were added last, and their absence was the largest hole
+# here: the function comparison is the gate's original and biggest dimension at 64 bodies, its
+# parser is the most complex, it had already failed silently twice, and the harness's own closing
+# line named only the other three. A dimension with only positive cases cannot distinguish a
+# working detector from one that reports everything, so each dimension ends with a negative
+# control: C5 (a
+# constraint migration 0023 declares deliberately unvalidated must NOT be reported), T5 (a
 # trigger migration 0026 drops and recreates in the same file must NOT be reported).
 #
 # THIS SCRIPT MUTATES THE LIVE SCHEMA. It restores unconditionally, and refuses to report
@@ -63,7 +67,7 @@ function Invoke-Sql {
         $text = ($out | ForEach-Object { if ($_ -is [string]) { $_ } else { [string]$_ } }) -join ' '
         throw "psql failed (exit $code): $Sql -- $text"
     }
-    return (($out | Where-Object { $_ -is [string] -and $_ -notmatch '^(NOTICE|WARNING):' }) | Out-String).Trim()
+    return (($out | Where-Object { $_ -is [string] -and $_ -notmatch '^(NOTICE|WARNING):' }) -join "`n").Trim()
 }
 
 function Invoke-Script {
@@ -76,7 +80,7 @@ function Invoke-Script {
     } finally { $ErrorActionPreference = $prev }
     return [pscustomobject]@{
         Exit = $code
-        Text = (($out | ForEach-Object { if ($_ -is [string]) { $_ } else { [string]$_ } }) | Out-String)
+        Text = (($out | ForEach-Object { if ($_ -is [string]) { $_ } else { [string]$_ } }) -join "`n")
     }
 }
 
@@ -110,7 +114,7 @@ function Invoke-Mutation {
     catch { return $_.Exception.Message }
 }
 
-# Report a mutation that never reached the database, in one place, so the three dimensions cannot
+# Report a mutation that never reached the database, in one place, so the dimensions cannot
 # drift in how they describe it.
 function Write-NotApplied {
     param([string] $Name, [string] $Target, [string] $ErrorText)
@@ -674,10 +678,441 @@ if ($t5ok) {
 $script:results += [pscustomobject]@{ Mutation = 'T5 negative control -> drop-then-recreate in one migration not reported'; Target = "ops.outbox.$t1trigger"; Detected = $t5ok }
 
 # =========================================================================================
+# FUNCTION DIMENSION MUTATION PROOFS
+#
+# Added 2026-10-03. This was the gate's FIRST dimension and it is its LARGEST -- 64 function
+# bodies compared against pg_proc.prosrc -- and it was the only dimension with no case in this
+# file at all. The harness's closing line said "index, constraint and trigger", which was honest
+# but incomplete, so a regression in the largest comparison could have been entirely silent.
+#
+# That gap mattered more here than for the other three, because the function parser is the most
+# complex in the gate and has already failed silently, twice:
+#
+#   1. Its header pattern used [^$]*? between the function name and the body delimiter, so any
+#      function whose SIGNATURE contained a dollar sign was not matched at all --
+#      config.assert_no_embedded_secrets(p_document JSONB, p_path TEXT DEFAULT '$') is exactly
+#      such a function. It was dropped from the comparison with no warning: the gate printed
+#      expected_functions=62 while the files declared 63, and reported drift=0 while that
+#      function was live holding a corrupted body. F2 fires at that exact function, so a
+#      regression of that specific bug can no longer pass unnoticed.
+#
+#   2. It matched only CREATE OR REPLACE, so migration 0026's plain CREATE FUNCTION was reported
+#      as UNDECLARED -- a false accusation against a correct database.
+#
+# WHY THE MUTATION INSERTS A COMMENT RATHER THAN REPLACING THE BODY. prosrc stores in-body
+# comments verbatim and the gate compares body text, so a comment changes prosrc and must be
+# reported while leaving the function's behaviour completely unchanged. An earlier proof of this
+# dimension replaced a guard body with a bare RETURN NULL, which proves the same byte-sensitivity
+# but with real blast radius if a restore ever fails -- on a financial guard. Inserting a comment
+# proves detection of exactly the value the gate compares, and cannot leave a guard disabled even
+# if restoration were skipped entirely.
+#
+# The mutation is built from the CAPTURED pg_get_functiondef rather than a hand-written
+# CREATE OR REPLACE, so it cannot be wrong about argument names, defaults or the return type.
+# Reconstructing a signature by hand is how an earlier draft of this harness came to mutate a
+# trigger name that does not exist.
+# =========================================================================================
+Write-Output ''
+Write-Output '### FUNCTION DIMENSION MUTATION PROOFS'
+
+# A FUNCTION BODY CANNOT TRAVEL THIS WAY, and both obvious alternatives were measured failing on
+# this host before a third was adopted.
+#
+# Invoke-Sql above passes SQL to psql with -c as a native argument. That mangles a multi-line body:
+# newlines collapse, so an inserted "-- comment" swallows the rest of the body and the dollar-quoted
+# string is left unterminated. The first attempt at this dimension failed exactly that way, and every
+# case correctly reported NOT APPLIED rather than a false pass.
+#
+# Piping to `psql -f -` is no better. PowerShell's native-stdin path is text-mode, so every embedded
+# LF was rewritten to CRLF: a restored prosrc came back 2627 characters against an original 2627 --
+# the same length, different bytes, which is worse than an obvious mismatch because it reads like
+# success. migrate.ps1 also pipes, and its encoding fix addresses character encoding rather than the
+# text-mode conversion, so it does not make this route safe for a body.
+#
+# Writing the bytes to a file and letting psql read it with -f removes the pipe from the path, so
+# the server stores exactly what migrate.ps1 reads from disk. Measured round-trip after the change:
+# both function bodies re-applied from their own pg_get_functiondef came back byte-identical,
+# including the one containing a section sign, which is the body that exposed the CRLF problem.
+#
+# Scoped to this dimension deliberately. Invoke-Sql remains in use for the index, constraint and
+# trigger mutations, whose SQL is single-line and demonstrably unaffected by either hazard; changing
+# the proven path to accommodate a new one would trade a known-good mechanism for a fresh risk.
+#
+# NEVER reintroduce Out-String in this file. It was used to format psql's result and it wraps long
+# single-line values at the console width, measured at 60 on this host, inserting newlines into the
+# middle of the value it is supposed to be passing through. It silently corrupted this harness twice,
+# in two different ways that looked like unrelated bugs:
+#   - a 1802-character hex string came back as 1832 characters, so a correctly restored 901-byte body
+#     was reported as 916 bytes and judged unequal to its own original (F1/F2 restore failures); and
+#   - it formatted the GATE's text in Invoke-Script, splitting the long PARSE_INCOMPLETE sentence
+#     across lines so that no single-line pattern could ever match it (F4), while the cases whose
+#     expected patterns were short kept passing and hid the cause.
+# Every wrapper here joins psql's lines with "`n" instead, which reassembles multi-line output
+# exactly and leaves single-line values untouched.
+$script:sqlSeq = 0
+function Invoke-SqlBytes {
+    param([string] $Sql)
+    $script:sqlSeq++
+    $name = "harness_sql_$PID`_$($script:sqlSeq).sql"
+    $hostPath = Join-Path ([System.IO.Path]::GetTempPath()) $name
+    $ctrPath = "/tmp/$name"
+    # BOM-less UTF-8, for the reason migrate.ps1 records: a BOM corrupts the first statement.
+    [System.IO.File]::WriteAllText($hostPath, $Sql, (New-Object System.Text.UTF8Encoding($false)))
+    $prevEA = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & docker cp $hostPath "$($Container):$ctrPath" 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "docker cp failed (exit $LASTEXITCODE)" }
+        # ON_ERROR_STOP=1 is essential here and was nearly omitted: psql reading a script continues
+        # past a failed statement and would exit 0, so a mutation that did not apply would be
+        # indistinguishable from one that did.
+        $out = & docker exec $Container psql -U $User -d $Database -tAq -v ON_ERROR_STOP=1 -f $ctrPath 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEA
+        & docker exec $Container rm -f $ctrPath 2>&1 | Out-Null
+        Remove-Item -LiteralPath $hostPath -Force -ErrorAction SilentlyContinue
+    }
+    if ($code -ne 0) {
+        $text = ($out | ForEach-Object { if ($_ -is [string]) { $_ } else { [string]$_ } }) -join ' '
+        throw "psql failed (exit $code): $text"
+    }
+    return (($out | Where-Object { $_ -is [string] -and $_ -notmatch '^(NOTICE|WARNING):' }) -join "`n").Trim()
+}
+
+function Invoke-MutationBytes {
+    param([string] $Sql)
+    try { [void] (Invoke-SqlBytes $Sql); return $null }
+    catch { return $_.Exception.Message }
+}
+
+function Get-FunctionDef {
+    param([string] $Qualified)
+    try { return (Invoke-SqlBytes "SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname || '.' || p.proname = '$Qualified' ORDER BY p.oid LIMIT 1;") }
+    catch { return $null }
+}
+
+# NOTE: there is deliberately no 'SELECT p.prosrc' reader here. It reads through Invoke-SqlBytes,
+# which ends in .Trim(), so it silently drops the newline that prosrc begins and ends with, and it
+# returns a value that looks like the body while not being the bytes the gate compares. Use
+# Get-FunctionBodyExact below for anything that must reproduce stored bytes.
+
+# The authoritative comparison, and it exists because a trimmed string comparison proved worthless
+# here. Invoke-SqlBytes ends in .Trim(), so a body that had lost or gained leading or trailing
+# whitespace compared EQUAL while the stored bytes differed -- and the gate, which is the real
+# authority, correctly reported drift on a database the harness had just called restored. Hex has
+# no normalisation to hide behind, so a restore is verified only if these two match exactly.
+function Get-FunctionBodyHex {
+    param([string] $Qualified)
+    try { return (Invoke-SqlBytes "SELECT encode(convert_to(p.prosrc,'UTF8'),'hex') FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname || '.' || p.proname = '$Qualified' ORDER BY p.oid LIMIT 1;") }
+    catch { return $null }
+}
+
+# The exact body, for building a statement that must reproduce the stored bytes.
+#
+# Two separate defects made 'SELECT p.prosrc' unusable for this, and both had to be removed
+# before a restore could be byte-exact:
+#
+#   1. Out-String, used to format the result, wraps long single-line values at the console
+#      width -- measured at 60 on this host. A 1802-character hex string came back as 1832
+#      characters with 30 newlines injected into it, so a body that had been restored to the
+#      correct 901 bytes was reported as 916 and judged unequal to its own original.
+#   2. .Trim(), which Invoke-SqlBytes ends with, removes leading and trailing whitespace from
+#      prosrc. This body's real prosrc begins and ends with a newline (903 bytes), so the
+#      trimmed read returned 901 and a restore built from it silently dropped two bytes.
+#
+# Hex has neither problem: it contains no whitespace for a wrapper to normalise, no line for
+# a wrapper to break, and decoding it restores the leading and trailing newlines exactly.
+function ConvertFrom-HexText {
+    param([string] $Hex)
+    $n = [int]($Hex.Length / 2)
+    $bytes = New-Object byte[] $n
+    for ($i = 0; $i -lt $n; $i++) { $bytes[$i] = [Convert]::ToByte($Hex.Substring($i * 2, 2), 16) }
+    return [System.Text.Encoding]::UTF8.GetString($bytes)
+}
+
+function Get-FunctionBodyExact {
+    param([string] $Qualified)
+    $hex = Get-FunctionBodyHex $Qualified
+    if ([string]::IsNullOrEmpty($hex)) { return $null }
+    return (ConvertFrom-HexText $hex)
+}
+
+# Rebuild a function definition with its body replaced by an exact body string.
+#
+# This is what makes restoration correct by construction rather than by luck. pg_get_functiondef
+# renders the body as PostgreSQL chooses to render it, so "re-apply the captured definition and hope
+# prosrc returns unchanged" is an assumption, and on this host it was measured to be false for one
+# function before the transport was fixed. Splicing the ORIGINAL prosrc back between the dollar-quote
+# tags cannot be wrong: the bytes the gate compares are the bytes being written.
+function Get-FunctionDefWithBody {
+    param([string] $Definition, [string] $Body)
+    $asIdx = $Definition.IndexOf('AS $')
+    if ($asIdx -lt 0) { return $null }
+    $tagStart = $asIdx + 4
+    $tagEnd = $Definition.IndexOf('$', $tagStart)
+    if ($tagEnd -lt 0) { return $null }
+    $tag = $Definition.Substring($tagStart, $tagEnd - $tagStart)
+    $openSeq = 'AS $' + $tag + '$'
+    $closeSeq = '$' + $tag + '$'
+    $openIdx = $Definition.IndexOf($openSeq)
+    $closeIdx = $Definition.LastIndexOf($closeSeq)
+    if ($openIdx -lt 0 -or $closeIdx -le $openIdx) { return $null }
+    $head = $Definition.Substring(0, $openIdx + $openSeq.Length)
+    $tail = $Definition.Substring($closeIdx)
+    return $head + $Body + $tail
+}
+
+function Test-FunctionMutation {
+    param(
+        [string] $Name,
+        [string] $Qualified,
+        [string] $ExpectPattern,
+        [switch] $Verbose
+    )
+    $definition = Get-FunctionDef $Qualified
+    $hexBefore  = Get-FunctionBodyHex $Qualified
+    # The exact body, NOT the trimmed 'SELECT p.prosrc' read: this function's stored prosrc
+    # begins and ends with a newline, and a trimmed read would restore 901 bytes instead of 903.
+    $bodyBefore = Get-FunctionBodyExact $Qualified
+    Write-Output ''
+    Write-Output "=== $Name ==="
+    Write-Output "  target:   $Qualified"
+    Write-Output "  prosrc bytes before: $(if ($null -eq $hexBefore) { '<absent>' } else { [int]($hexBefore.Length / 2) })"
+
+    # The probe comment goes INSIDE the body, so it lands in prosrc, which is the value the gate
+    # compares. Behaviour is unchanged: if restoration were skipped entirely, the guard still
+    # enforces exactly what it enforced before.
+    $probeBody = $bodyBefore + "`n-- HARNESS PROBE: prosrc altered, behaviour unchanged"
+    $mutate = if ($null -eq $definition) { $null } else { Get-FunctionDefWithBody $definition $probeBody }
+    $restore = if ($null -eq $definition) { $null } else { Get-FunctionDefWithBody $definition $bodyBefore }
+    if ($null -eq $mutate -or $null -eq $restore) {
+        Write-NotApplied $Name $Qualified 'could not build a mutation from the captured definition'
+        return
+    }
+    try {
+        # Invoke-MutationBytes, NOT Invoke-Mutation: $mutate is a multi-line function definition, and
+        # the -c transport used by Invoke-Mutation collapses its newlines, which is exactly how the
+        # first attempt at this dimension failed with an unterminated dollar-quoted string.
+        $applyError = Invoke-MutationBytes $mutate
+        if ($null -ne $applyError) { Write-NotApplied $Name $Qualified $applyError; return }
+
+        # Prove the mutation LANDED before believing any result from the gate. This rule has been
+        # learned four times in this harness: a mutation that does not apply is indistinguishable
+        # from a mutation the detector does not catch. Compared as hex, because a trimmed string
+        # comparison reported two lossy restores as byte-identical.
+        $hexDuring = Get-FunctionBodyHex $Qualified
+        if ($hexDuring -eq $hexBefore) {
+            Write-NotApplied $Name $Qualified 'prosrc is unchanged after the CREATE OR REPLACE, so the mutation did not land'
+            return
+        }
+
+        $gate = Invoke-Gate
+        if ($Verbose) {
+            ($gate.Text -split "`r?`n") | Where-Object { $_.Trim() } | ForEach-Object { Write-Output "  |$_" }
+        } else {
+            ($gate.Text -split "`r?`n") | Where-Object { $_ -match 'LIVE_DRIFT|UNDECLARED_IN_DATABASE|PARSE_INCOMPLETE|compared_functions|drift=|^\s{2}\S' } |
+                ForEach-Object { Write-Output "  |$_" }
+        }
+        $detected = ($gate.Text -match $ExpectPattern) -and $gate.Exit -eq 1
+        if ($detected) {
+            Write-Output "  RESULT: DETECTED (exit=$($gate.Exit))"
+        } else {
+            Write-Output "  RESULT: *** NOT DETECTED *** (exit=$($gate.Exit)) expected to match /$ExpectPattern/"
+        }
+        $script:results += [pscustomobject]@{ Mutation = $Name; Target = $Qualified; Detected = $detected }
+    } finally {
+        # Restore by splicing the ORIGINAL prosrc back between the tags, then verify prosrc is
+        # byte-identical to what was captured. Verifying is the only thing that separates a
+        # completed run from one that quietly left a financial guard altered.
+        $note = $null
+        try { [void] (Invoke-SqlBytes $restore) } catch { $note = "re-apply failed: $_" }
+        $hexAfter = $null
+        try { $hexAfter = Get-FunctionBodyHex $Qualified } catch { $note = "post-check failed: $_" }
+
+        if ($note) {
+            Write-Output "  RESTORE ERROR for $Qualified -- $note"
+            $script:results += [pscustomobject]@{ Mutation = "$Name [restore]"; Target = $Qualified; Detected = $false }
+        } elseif ($hexAfter -eq $hexBefore) {
+            Write-Output '  restored OK (prosrc byte-identical, compared as hex)'
+            $script:results += [pscustomobject]@{ Mutation = "$Name [restore]"; Target = $Qualified; Detected = $true }
+        } else {
+            $b = if ($null -eq $hexBefore) { '?' } else { [int]($hexBefore.Length / 2) }
+            $a = if ($null -eq $hexAfter)  { '?' } else { [int]($hexAfter.Length / 2) }
+            Write-Output "  RESTORE FAILED for $Qualified -- prosrc bytes differ from the captured original ($b vs $a)"
+            $script:results += [pscustomobject]@{ Mutation = "$Name [restore]"; Target = $Qualified; Detected = $false }
+        }
+    }
+}
+
+# F1: the basic case -- a body that differs from the repository must be reported as LIVE_DRIFT.
+Test-FunctionMutation -Name 'F1 function body altered -> LIVE_DRIFT' `
+    -Qualified 'market.guard_feed_sequence_monotonic' `
+    -ExpectPattern 'LIVE_DRIFT[\s\S]*guard_feed_sequence_monotonic'
+
+# F2: THE CASE THAT EARNS THIS DIMENSION. config.assert_no_embedded_secrets carries a dollar
+# sign inside its SIGNATURE (p_path TEXT DEFAULT '$'). The gate's original header pattern used
+# [^$]*? between the function name and the body delimiter, so it silently declined to match any
+# such function: the count it printed was two lower than the files declared, no warning was
+# emitted, and the gate reported drift=0 while this very function held a corrupted body. Only
+# firing a mutation AT this function distinguishes a parser that compares it from one that skips
+# it -- F1 would pass against the broken parser too, because F1's target has a plain signature.
+Test-FunctionMutation -Name 'F2 function with a dollar sign in its signature is compared, not skipped' `
+    -Qualified 'config.assert_no_embedded_secrets' `
+    -ExpectPattern 'LIVE_DRIFT[\s\S]*assert_no_embedded_secrets'
+
+# F3: the reverse direction -- an object added live that no migration declares. The index,
+# constraint and trigger dimensions each have this case, and its absence would let the gate
+# ignore anything added to the database outside the repository.
+$f3name = 'zz_probe_function'
+Write-Output ''
+Write-Output '=== F3 undeclared function added live -> UNDECLARED_IN_DATABASE ==='
+Write-Output "  target:   ops.$f3name"
+$f3mutate = @"
+CREATE FUNCTION ops.$f3name() RETURNS integer LANGUAGE sql AS `$probe`$ SELECT 1 `$probe`$;
+"@
+$f3existsBefore = (Invoke-Sql "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='ops' AND p.proname='$f3name';")
+try {
+    $f3err = Invoke-MutationBytes $f3mutate
+    if ($null -ne $f3err) {
+        Write-NotApplied 'F3 undeclared function -> UNDECLARED_IN_DATABASE' "ops.$f3name" $f3err
+    } else {
+        # Same rule as everywhere else in this file: assert the mutation landed before believing
+        # the gate. The index probe originally carried a duplicated ON clause, so the trigger was
+        # never created and the case was reported as a pass against a detector that was never fired.
+        $f3existsDuring = (Invoke-Sql "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='ops' AND p.proname='$f3name';")
+        if ($f3existsDuring -eq '0') {
+            Write-NotApplied 'F3 undeclared function -> UNDECLARED_IN_DATABASE' "ops.$f3name" 'probe_present_in_live=0, so the function was never created'
+        } else {
+            $f3gate = Invoke-Gate
+            ($f3gate.Text -split "`r?`n") | Where-Object { $_ -match 'UNDECLARED_IN_DATABASE|LIVE_DRIFT|drift=|^\s{2}\S' } |
+                ForEach-Object { Write-Output "  |$_" }
+            $f3ok = ($f3gate.Text -match "UNDECLARED_IN_DATABASE[\s\S]*$f3name") -and ($f3gate.Exit -eq 1)
+            if ($f3ok) {
+                Write-Output "  RESULT: DETECTED (exit=$($f3gate.Exit))"
+            } else {
+                Write-Output "  RESULT: *** NOT DETECTED *** (exit=$($f3gate.Exit))"
+            }
+            $script:results += [pscustomobject]@{ Mutation = 'F3 undeclared function -> UNDECLARED_IN_DATABASE'; Target = "ops.$f3name"; Detected = $f3ok }
+        }
+    }
+} finally {
+    $f3note = $null
+    try { [void] (Invoke-Sql "DROP FUNCTION IF EXISTS ops.$f3name();") } catch { $f3note = "drop failed: $_" }
+    $f3existsAfter = $null
+    try { $f3existsAfter = (Invoke-Sql "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='ops' AND p.proname='$f3name';") } catch { $f3note = "post-check failed: $_" }
+    if ($f3note) {
+        Write-Output "  RESTORE ERROR for ops.$f3name -- $f3note"
+        $script:results += [pscustomobject]@{ Mutation = 'F3 undeclared function [restore]'; Target = "ops.$f3name"; Detected = $false }
+    } elseif ($f3existsAfter -eq $f3existsBefore) {
+        Write-Output '  restored OK (probe absent again)'
+        $script:results += [pscustomobject]@{ Mutation = 'F3 undeclared function [restore]'; Target = "ops.$f3name"; Detected = $true }
+    } else {
+        Write-Output "  RESTORE FAILED for ops.$f3name -- probe count $f3existsBefore -> $f3existsAfter"
+        $script:results += [pscustomobject]@{ Mutation = 'F3 undeclared function [restore]'; Target = "ops.$f3name"; Detected = $false }
+    }
+}
+
+# F4: fail closed rather than under-report. If a migration declares a CREATE FUNCTION the parser
+# cannot read, the gate must refuse to issue a verdict instead of comparing fewer things than the
+# repository declares and reporting the difference as agreement. Mirrors M7 and C4, which exist for
+# the index and constraint sections for the same reason.
+Write-Output ''
+Write-Output '=== F4 unparseable function -> PARSE_INCOMPLETE (fail closed) ==='
+$f4sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('schema-gate-func-probe-' + [Guid]::NewGuid().ToString('N'))
+try {
+    $f4db   = Join-Path $f4sandbox 'db'
+    $f4migr = Join-Path $f4db 'migrations'
+    [void] (New-Item -ItemType Directory -Path $f4migr -Force)
+    Copy-Item $GatePath (Join-Path $f4db 'verify-schema-live.ps1') -Force
+
+    # Two dollar-quoted functions the parser reads, plus one it deliberately cannot. The readable
+    # ones are not decoration: without them a parse failure could be satisfied by the gate failing
+    # on an empty migration set rather than by the specific under-parse being detected.
+    #
+    # The unparseable one is given a SINGLE-QUOTED body, not a missing semicolon. That distinction
+    # was measured, not guessed. This fixture originally omitted the terminating semicolon on the
+    # theory that the gate's statement pattern needed one, and the gate parsed it anyway -- it
+    # reported all three functions MISSING_IN_DATABASE and never reached PARSE_INCOMPLETE, so the
+    # case reported NOT DETECTED while looking like a detector failure. The gate's function pattern
+    # requires a dollar-quoted body, AS $tag$ ... $tag$, and has no semicolon requirement at all,
+    # so a single-quoted body is the form that genuinely under-parses. The gate documents this as
+    # its intended fail-closed direction: such a function is valid PostgreSQL, is compared by
+    # nothing, and must produce a refusal rather than quiet coverage.
+    @'
+CREATE OR REPLACE FUNCTION common.sandbox_ok() RETURNS boolean AS $$
+SELECT true;
+$$ LANGUAGE sql;
+'@ | Set-Content -LiteralPath (Join-Path $f4migr '0001_base.sql') -Encoding UTF8
+
+    @'
+CREATE OR REPLACE FUNCTION common.sandbox_third() RETURNS boolean AS $body$ SELECT true $body$;
+
+-- The CREATE FUNCTION below uses a single-quoted body rather than a dollar-quoted one. That is
+-- valid PostgreSQL, and it is deliberately NOT parseable by the gate's function pattern, so the
+-- gate compares one fewer function than the files declare. It must refuse and say so instead of
+-- reporting coverage it does not have. The bare phrase mention inside this comment must NOT be
+-- counted toward declared_by_files, which is what makes declared=3 rather than 4 the assertion.
+CREATE OR REPLACE FUNCTION common.sandbox_single_quoted() RETURNS boolean AS 'SELECT true'
+'@ | Set-Content -LiteralPath (Join-Path $f4migr '0002_unparseable.sql') -Encoding UTF8
+
+    $f4 = Invoke-Script -Path (Join-Path $f4db 'verify-schema-live.ps1')
+    ($f4.Text -split "`r?`n") | Where-Object { $_ -match 'PARSE_INCOMPLETE|declared_by_files|compared_functions' } |
+        ForEach-Object { Write-Output "  |$_" }
+
+    # Assert the claim rather than one wording of it: the gate must have declared 3 functions,
+    # must have parsed FEWER than it declared, and must have failed closed. The previous form of
+    # this check matched one literal count inside one long sentence, which is fragile twice over --
+    # it broke when the parsed count was not the one guessed here, and it could never match at all
+    # while Invoke-Script formatted the gate's text through Out-String, because that wraps long
+    # lines and splits the sentence across lines. Capturing the count also asserts the stronger
+    # property that the under-parse was real, instead of only that some number appeared.
+    $f4m = [regex]::Match($f4.Text, 'declare 3 CREATE \[OR REPLACE\] FUNCTION statements but only (\d+) could be parsed')
+    $f4ok = $f4m.Success -and ([int]$f4m.Groups[1].Value -lt 3) -and ($f4.Exit -eq 1)
+    if ($f4ok) {
+        Write-Output "  RESULT: DETECTED (exit=1, declared=3 not 4 -- comment stripper confirmed; parsed=$($f4m.Groups[1].Value) < 3)"
+    } else {
+        Write-Output "  RESULT: *** NOT DETECTED *** (exit=$($f4.Exit))"
+    }
+    $script:results += [pscustomobject]@{ Mutation = 'F4 unparseable function -> PARSE_INCOMPLETE'; Target = 'sandbox'; Detected = $f4ok }
+} finally {
+    if (Test-Path -LiteralPath $f4sandbox) { Remove-Item -LiteralPath $f4sandbox -Recurse -Force }
+}
+
+# F5: NEGATIVE CONTROL for the dimension. A detector that fires on everything satisfies F1-F4, so
+# something must assert that it stays silent on a correct database -- and for this section the
+# silent failure was not a phantom finding but a MISSING one. The dollar-sign bug made the gate
+# compare fewer functions than it expected while still printing drift=0, so the arithmetic
+# compared_functions=expected_functions is the assertion that catches it, and it is invisible to a
+# case that only fires mutations.
+#
+# It also covers the declaration arithmetic the function walk has to get right: the files contain
+# more CREATE statements than there are live functions, because a function may be redefined by a
+# later migration (last definition wins, matching apply order) and because some are dropped by a
+# later migration. Neither may be reported as missing.
+$f5gate = Invoke-Gate
+$f5reported = if ($f5gate.Text -match 'compared_functions=(\d+)\s+expected_functions=(\d+)') {
+    "$($Matches[1])/$($Matches[2])"
+} else { '<none>' }
+Write-Output ''
+Write-Output '=== F5 negative control -> nothing reported against a correct database ==='
+Write-Output "  compared/expected functions reported: $f5reported"
+$f5countsMatch = ($f5gate.Text -match 'compared_functions=(\d+)\s+expected_functions=(\d+)') `
+    -and ($Matches[1] -eq $Matches[2]) `
+    -and ([int] $Matches[1] -gt 0)
+$f5ok = $f5countsMatch -and ($f5gate.Exit -eq 0) -and ($f5gate.Text -notmatch 'LIVE_DRIFT|UNDECLARED_IN_DATABASE|PARSE_INCOMPLETE')
+if ($f5ok) {
+    Write-Output '  RESULT: DETECTED (gate green, compared == expected, and nothing reported)'
+} else {
+    Write-Output "  RESULT: *** FAILED *** (exit=$($f5gate.Exit) counts=$f5reported)"
+}
+$script:results += [pscustomobject]@{ Mutation = 'F5 negative control -> correct database reported clean'; Target = 'live database'; Detected = $f5ok }
+
+# =========================================================================================
 # SELF-TEST: does the harness itself notice a mutation that never applied?
 #
 # Every mutation in this file is applied, verified through the gate, and restored. The guard added
-# to all three dimensions converts a failure to apply into a recorded NOT DETECTED instead of an
+# to every dimension converts a failure to apply into a recorded NOT DETECTED instead of an
 # exception that would abort the run -- and it has been trusted in exactly one way so far, which is
 # the way this whole file exists to distrust. A guard that has only ever run on the happy path has
 # been shown to do nothing.
@@ -741,5 +1176,5 @@ if ($failed.Count -gt 0 -or $finalGate.Exit -ne 0 -or $migrate.Exit -ne 0) {
     Write-Output 'OVERALL: FAIL'
     exit 1
 }
-Write-Output 'OVERALL: PASS - every index, constraint and trigger mutation was detected and the schema is green again.'
+Write-Output 'OVERALL: PASS - every index, constraint, trigger and function mutation was detected and the schema is green again.'
 exit 0
