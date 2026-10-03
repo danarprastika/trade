@@ -933,6 +933,14 @@ function Test-FunctionMutation {
         if ($note) {
             Write-Output "  RESTORE ERROR for $Qualified -- $note"
             $script:results += [pscustomobject]@{ Mutation = "$Name [restore]"; Target = $Qualified; Detected = $false }
+        } elseif ([string]::IsNullOrEmpty($hexAfter)) {
+            # $hexBefore cannot be null or empty on this path -- the caller returns early when the
+            # definition is absent -- so an empty read here means the function could not be read
+            # back at all. Written out explicitly because '$null -eq $null' is true in PowerShell,
+            # which would let a pair of failed reads compare EQUAL and report a restore that never
+            # happened. Test-Mutation already had this branch; Test-FunctionMutation did not.
+            Write-Output "  RESTORE FAILED for $Qualified -- prosrc could not be read back after the restore"
+            $script:results += [pscustomobject]@{ Mutation = "$Name [restore]"; Target = $Qualified; Detected = $false }
         } elseif ($hexAfter -eq $hexBefore) {
             Write-Output '  restored OK (prosrc byte-identical, compared as hex)'
             $script:results += [pscustomobject]@{ Mutation = "$Name [restore]"; Target = $Qualified; Detected = $true }
@@ -1067,10 +1075,17 @@ CREATE OR REPLACE FUNCTION common.sandbox_single_quoted() RETURNS boolean AS 'SE
     # while Invoke-Script formatted the gate's text through Out-String, because that wraps long
     # lines and splits the sentence across lines. Capturing the count also asserts the stronger
     # property that the under-parse was real, instead of only that some number appeared.
+    #
+    # The count is pinned to exactly 2 rather than asserted as merely 'fewer than 3', and an
+    # independent review is why. '-lt 3' is also satisfied by parsed=0, which a gate whose
+    # function pattern matched NOTHING would produce -- so the assertion would pass against a
+    # gate that had stopped parsing functions altogether. 2 is the measured value for this
+    # fixture: sandbox_ok and sandbox_third parse, sandbox_single_quoted does not.
     $f4m = [regex]::Match($f4.Text, 'declare 3 CREATE \[OR REPLACE\] FUNCTION statements but only (\d+) could be parsed')
-    $f4ok = $f4m.Success -and ([int]$f4m.Groups[1].Value -lt 3) -and ($f4.Exit -eq 1)
+    $f4parsed = if ($f4m.Success) { [int]$f4m.Groups[1].Value } else { -1 }
+    $f4ok = $f4m.Success -and ($f4parsed -eq 2) -and ($f4.Exit -eq 1)
     if ($f4ok) {
-        Write-Output "  RESULT: DETECTED (exit=1, declared=3 not 4 -- comment stripper confirmed; parsed=$($f4m.Groups[1].Value) < 3)"
+        Write-Output "  RESULT: DETECTED (exit=1, declared=3 not 4 -- comment stripper confirmed; parsed=$f4parsed of 3)"
     } else {
         Write-Output "  RESULT: *** NOT DETECTED *** (exit=$($f4.Exit))"
     }
