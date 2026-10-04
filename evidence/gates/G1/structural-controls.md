@@ -1050,27 +1050,73 @@ second copy of the case. Resolving the case is the whole clearing procedure.
 `01_SYSTEM_ARCHITECTURE.md` §3 makes reconciliation authoritative for venue
 discrepancies, so the case table is read directly rather than projected.
 
-**Mutation testing: 7/7 caught**, each by a distinct test
-(`db/mutate_0018.ps1`):
+**Mutation testing: 6/6 caught** (`db/mutate_0018.ps1`). The "Caught by" column
+lists every test that went red, which is not always one:
 
 | Mutation | Behaviour removed | Caught by |
 |---|---|---|
-| A | the gate is never called (restores the pre-0018 world) | `TestAnOpenMaterialBreakBlocksRiskIncreasingOrder` |
 | B | risk-reducing exemption | `TestTheBreakGateItselfExemptsRiskReducingActivity` |
 | C | only MATERIAL blocks | `TestANonMaterialBreakDoesNotBlockTrading` |
-| D | terminal cases still block | `TestAResolvedMaterialBreakNoLongerBlocks` |
-| E | `blocked_scope` ignored | `TestABreakOnOneAccountDoesNotBlockAnother` |
+| D | terminal cases still block | `TestAnAcceptedDifferenceNoLongerBlocks`, `TestAResolvedMaterialBreakNoLongerBlocks` |
+| E | `blocked_scope` ignored | `TestABreakOnOneAccountDoesNotBlockAnother`, `TestABreakOnOneVenueDoesNotBlockAnotherVenue` |
 | F | uninterpretable scope under-blocks | `TestAnUninterpretableScopeBlocksEverything` |
 | G | environment not matched | `TestABreakInOneEnvironmentDoesNotBlockAnother` |
 
 ```
-mutations caught: 7/7  [A, B, C, D, E, F, G]
+mutations caught: 6/6  [B, C, D, E, F, G]
 ```
 
-Mutation A is the important one, because it reinstates exactly the defect:
-`0005`'s comment with no enforcement behind it. It is caught by the same test
-that the original audit would have needed, and it is caught by exactly one
-test, which is a fair measure of how thin the original coverage was.
+**The missing A is the finding, not a deletion of coverage.** This section
+previously claimed 7/7, including an A that removed the reconciliation gate call
+from `ops.assert_risk_increase_permitted` *in migration 0018*. That mutation was
+aimed at a dead copy of the function: 0019 re-issues
+`CREATE OR REPLACE FUNCTION ops.assert_risk_increase_permitted` in order to add its
+own step 4, so 0018's body is discarded when the series is applied. Deleting the
+call changed the live schema by zero bytes, no test went red, and the harness
+reported the mutation as not load-bearing — which the harness was entitled to do,
+because the mutation genuinely did nothing. The 7/7 was a claim about a control
+nobody was mutating.
+
+The gate is load-bearing, and the proof is now real: mutation I in
+`db/mutate_0019.ps1`, caught by `TestAnOpenMaterialBreakBlocksRiskIncreasingOrder`,
+`TestAnUninterpretableScopeBlocksEverything` and `TestAReopenedBreakBlocksAgain`.
+Removing that call site leaves `reconciliation.assert_break_permitted` with no caller
+anywhere in the series, so every test asserting that an unresolved MATERIAL break
+refuses an order goes red — and there are three of those tests, not one.
+
+**The harness had only ever been checking one failing test.** The extraction these
+scripts use to decide whether a mutation was caught read
+`Select-String -InputObject $out -Pattern '^\s*--- FAIL: (\w+)'`. `^` without the
+multiline flag anchors to the start of the whole joined `go test` output, so it
+returned the first failing test and silently dropped the rest. Every `MustFailPattern`
+verdict in five harnesses — 0016, 0017, 0018, 0019 and 0020/0021 — was therefore made
+against one test out of all of them. Measured on a three-failure input, the old
+expression returned 1 name and the corrected `(?m)` form returned 3.
+
+The defect was not cosmetic. It hid two of mutation I's three catching tests, and it
+hid a genuinely over-broad verdict: 0019's mutation F was reported as caught only
+because the first test to fail happened to match its pattern, while a third test that
+covers the same in-force-mapping guard was never examined. `db/mutate_domain.ps1`
+already used the correct `(?m)` form, so the fix was to apply that existing idiom to
+the other five rather than invent one. Re-run with corrected extraction: 0016 5/5,
+0017 8/8, 0018 6/6, and 0019 8/9 with F correctly flagged over-broad — 9/9 once F's
+pattern was widened to `Repointed|Renamed|MoveItsEffectiveAt`, since
+`TestAnEffectiveVenueSymbolCannotMoveItsEffectiveAt` tests the same guard. The tallies
+did not move; what moved is that they now mean what they claim.
+
+**Mutation D was also mis-attributed until the fixture was fixed.** D widens the
+gate's status filter to `status IS NOT NULL`, and the first run reported it as
+over-broad because unrelated tests failed alongside the intended one. The cause was
+not the mutation: `dbtest.Committed` truncates a fixed table list after a committed
+test, and `reconciliation.case` was not on it. `reconciliation.case` is the blocking
+control itself, so one committed case outliving its test blocks every later order
+test in the package — including tests asserting the gate *permits* an order, and
+tests asserting a NON-MATERIAL case does not block. `clearCases` in
+`dbtest/reconcile_test.go` had already been written to resolve such cases, but
+resolving is not removing: `RESOLVED` is merely excluded by the gate's status
+filter, so the row stayed invisible until mutation D widened that filter, at which
+point ten tests failed for reasons unrelated to what they assert. Both reconciliation
+tables are now truncated by `Committed`; D fails exactly the two tests it is about.
 
 Mutation B is the second instance of a control carried by its caller — the
 third overall, after 13a/13b and 0016's mutation A. The gate's guard is
@@ -1150,19 +1196,27 @@ ends up unenforced in production while every test is green. Tests that need a
 constrained instrument now build their own, so the constraint under test is
 visible in the test.
 
-**Mutation testing: 8/8 caught**, each by a distinct test
-(`db/mutate_0019.ps1`):
+**Mutation testing: 9/9 caught** (`db/mutate_0019.ps1`), with every test that went
+red listed rather than only the first one:
 
 | Mutation | Behaviour removed | Caught by |
 |---|---|---|
 | A | order type support | `TestAnOrderTypeTheInstrumentDoesNotSupportIsRefused` |
 | B | shorting support | `TestAShortAgainstANonShortableInstrumentIsRefused` |
-| C | increment grid | `TestAQuantityOffTheIncrementGridIsRefused` |
-| D | `min_notional` | `TestAnOrderBelowMinNotionalIsRefused` |
-| E | tradability at risk approval | `TestAnInstrumentThatStoppedTradingIsRefusedAtRiskApproval` |
-| F | in-force mapping repointed | `TestAnEffectiveVenueSymbolCannotBeRepointedAtAnotherInstrument` |
+| C | increment grid | `TestAPriceOffTheTickGridIsRefused`, `TestAQuantityOffTheIncrementGridIsRefused` |
+| D | `min_notional` | `TestAMarketOrderThatCannotBeValuedAgainstMinNotionalIsRefused`, `TestAnOrderBelowMinNotionalIsRefused` |
+| E | tradability at risk approval | `TestAHaltedInstrumentIsRefusedAtRiskApproval`, `TestAnInstrumentThatStoppedTradingIsRefusedAtRiskApproval`, `TestAnInstrumentWithUnknownTradingStatusIsRefusedAtRiskApproval`, `TestEveryNonOpenTradingStatusDenies` |
+| F | in-force mapping repointed | `TestAnEffectiveVenueSymbolCannotBeRenamed`, `TestAnEffectiveVenueSymbolCannotBeRepointedAtAnotherInstrument`, `TestAnEffectiveVenueSymbolCannotMoveItsEffectiveAt` |
 | G | in-force mapping deleted | `TestAnEffectiveVenueSymbolCannotBeDeleted` |
 | H | sequence watermark rewind | `TestASequenceWatermarkCannotMoveBackwards` |
+| I | the reconciliation gate call in the risk-increase path (carried from 0018) | `TestAnOpenMaterialBreakBlocksRiskIncreasingOrder`, `TestAnUninterpretableScopeBlocksEverything`, `TestAReopenedBreakBlocksAgain` |
+
+Mutation I is inherited rather than introduced. 0018 supplies the reconciliation
+gate call, but 0019 replaces the function that contains it in order to add step 4,
+so 0019's copy is the definition that is actually live and that is the only place
+the mutation can bite. It was found by re-running the 0018 harness once the
+committed-fixture leak was fixed, at which point the 7/7 claim recorded there
+resolved into six genuinely caught mutations and one that had never done anything.
 
 Mutations H and defects 17 and 18 were found by independent review, not by this
 audit. That is the most useful thing in this section: the audit method found
@@ -1391,7 +1445,21 @@ diagnosis was right and only the remedy was wrong.
 `db/mutate_0020_0021.ps1`, `db/mutate_domain.ps1` covers both migrations: A (pre-0020 per-byte encoding),
 B (reversed bit order), C (uncalled entropy guard), D (`round` → `trunc`),
 E (dropped CHECK constraint), F (default `occurred_at` of `now()` restored).
-**6/6 caught.**
+**6/6 caught**, re-verified 2026-10-04 with the corrected failure extraction.
+
+Mutation A is the one that needed more than a pattern. Reverting the SQL encoder to
+the per-byte mapping changes every identifier the database mints, so it fails five
+tests that are genuinely about the encoder
+(`TestTheGoAndSQLCanonicalEncodersAgree`, `TestTheEncodersAgreeForEveryEntityType`,
+`TestNewCanonicalIdIsValidAndUnique`, `TestFreshIdentifiersRemainWellFormed`,
+`TestTheSQLEncoderAlsoRefusesEntropyOfTheWrongWidth`) and three more that are not:
+the audit chain and halt table stop finding their own rows, because the ids they look
+up no longer exist in the form they were minted under. Widening the `MustFailPattern`
+to swallow all eight would have hidden the distinction the over-broad check exists to
+draw, so `Invoke-Mutation` in this harness gained an `-ExpectedCollateral` parameter.
+A collateral failure has to be named, in a comment justifying why it is collateral
+rather than a test of the control. Mutation A declares exactly those three; any fourth
+undeclared failure still fails the run.
 
 An earlier run of the same suite reported mutation D surviving. That report was
 wrong and the suite was rerun from a clean migration state; the observed cause
@@ -1399,4 +1467,6 @@ was that the sub-microsecond fixture had not yet been corrected, so the mutant
 was accidentally still satisfiable. The corrected suite catches it. A mutation
 result that disagrees with a direct check is a question about the harness, not
 about the mutant, and it was resolved by re-deriving the result rather than by
-accepting the first number.
+accepting the first number. That principle is what surfaced the extraction defect
+described in the 0018 section above: the recorded number was wrong, and the right
+response was to re-measure rather than to argue for it.

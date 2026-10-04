@@ -65,6 +65,17 @@ func Open(t *testing.T) *sql.DB {
 // like Resettable, and truncates the trading tables afterwards so the committed
 // rows cannot leak into another test.
 //
+// reconciliation.case and reconciliation.check_run are in that list for the same
+// reason, and there it is not a formality: reconciliation.case is the blocking
+// control itself. An unresolved MATERIAL case refuses risk-increasing activity
+// through a trigger on oms.order, so one committed case that outlives its test
+// blocks every later order test in the package -- including tests asserting the
+// gate lets an order through, and tests asserting a NON-MATERIAL case does not
+// block. Resolving such a case rather than removing it is not sufficient either:
+// RESOLVED is only excluded by the gate's status filter, so the row stays
+// invisible until something widens that filter, and then every test in the package
+// fails for a reason that has nothing to do with what it asserts.
+//
 // It exists because one of the two invariant 5 controls is only reachable across
 // a transaction boundary. A deferred trigger on portfolio.position fires when a
 // position row is written; it cannot observe a fill that lands in a later
@@ -110,7 +121,8 @@ func Committed(t *testing.T, db *sql.DB, fn func(ctx context.Context, tx *sql.Tx
 			oms.fill, oms.order_event, oms."order",
 			market.trade, market.quote, market.candle, market.venue_symbol, market.instrument,
 			identity.session, identity.subject,
-			ops.outbox, ops.event_consumer_offset, ops.event_dead_letter
+			ops.outbox, ops.event_consumer_offset, ops.event_dead_letter,
+			reconciliation.case, reconciliation.check_run
 			RESTART IDENTITY CASCADE`); err != nil {
 			t.Errorf("truncate after committed test: %v", err)
 		}

@@ -67,8 +67,11 @@ function Invoke-Mutation {
         }
 
         $out = (& go test ./dbtest/... -count=1 -run 'Break|Material|RiskReducing|NonMaterial|Resolved|Accepted|Reopened|Uninterpretable|NoBreakAtAll' 2>&1) -join "`n"
-        $failed = @(Select-String -InputObject $out -Pattern '^\s*--- FAIL: (\w+)' -AllMatches |
-            ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        # (?m) is load-bearing. Without it ^ anchors to the start of the whole joined
+        # string, so this reported only the FIRST failing test and the MustFailPattern
+        # check below was made against one test out of all of them.
+        $failed = @([regex]::Matches($out, '(?m)^\s*--- FAIL: (\w+)') |
+            ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
 
         if ($failed.Count -eq 0) {
             Write-Host "    RESULT: no test failed -- the removed behaviour was NOT load-bearing"
@@ -91,18 +94,23 @@ function Invoke-Mutation {
 
 $results = [ordered]@{}
 
-# A: the gate stops being called at all. This is the exact state 0005 left the
-# system in -- the case is recorded and nothing reads it -- so this mutation
-# restores the pre-0018 world and MUST be caught.
-$results['A'] = Invoke-Mutation -Name 'gate no longer called from the risk-increase path' `
-    -Description 'Unresolved material breaks are recorded and never acted on: the pre-0018 state.' `
-    -MustFailPattern 'Break|Uninterpretable' `
-    -Mutate {
-        param($s)
-        [regex]::Replace($s,
-            '(    -- 3\. An unresolved MATERIAL reconciliation break covering this scope\.[\s\S]*?    PERFORM reconciliation\.assert_break_permitted\(\s*p_environment, p_account_id, p_instrument_id, p_venue_id,\s*p_is_risk_increasing, p_context\);)',
-            '    -- MUTANT A: the reconciliation gate is not called', 1)
-    }
+# A MOVED TO db/mutate_0019.ps1 -- this is a relocation, not a deletion of coverage.
+#
+# This mutation used to strip the reconciliation gate call out of
+# ops.assert_risk_increase_permitted *in this file*, and it silently proved
+# nothing. Migration 0019 issues its own CREATE OR REPLACE FUNCTION for
+# ops.assert_risk_increase_permitted, so the live definition is 0019's and 0018's
+# body is discarded when the series is applied. Deleting the call here changed the
+# live schema by zero bytes, no test went red, and the harness correctly reported
+# "no test failed -- the removed behaviour was NOT load-bearing". The harness was
+# right; the mutation was aimed at a dead copy of the function.
+#
+# The gate call is load-bearing and has to stay proven, so the mutation now lives in
+# db/mutate_0019.ps1 as mutation I, applied to the file that actually supplies the
+# function. The split follows where each piece of the control is defined: this file
+# owns reconciliation.assert_break_permitted and reconciliation.scope_covers, which
+# is why mutations B-G below genuinely bite, while 0019 owns the risk-increase gate
+# that calls them.
 
 # B: risk-reducing activity is no longer exempt. This is the dangerous
 # direction -- a control that blocks flattening converts a data quality problem

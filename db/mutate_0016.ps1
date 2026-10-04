@@ -65,8 +65,12 @@ function Invoke-Mutation {
         }
 
         $out = & go test ./dbtest/... -count=1 -run 'Position|Fill' 2>&1
-        $failed = @(Select-String -InputObject ($out -join "`n") -Pattern '^\s*--- FAIL: (\w+)' -AllMatches |
-            ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        $joined = ($out -join "`n")
+        # (?m) is load-bearing. Without it ^ anchors to the start of the whole joined
+        # string, so this reported only the FIRST failing test and the MustFailPattern
+        # check below was made against one test out of all of them.
+        $failed = @([regex]::Matches($joined, '(?m)^\s*--- FAIL: (\w+)') |
+            ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
 
         if ($failed.Count -eq 0) {
             Write-Host "    RESULT: no test failed -- the removed behaviour was NOT load-bearing"

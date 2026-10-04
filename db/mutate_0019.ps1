@@ -1,5 +1,11 @@
 # Mutation test for migration 0019 (instrument capability, increments, venue
-# symbol append-only, sequence monotonicity).
+# symbol append-only, sequence monotonicity, and the risk-increase gate).
+#
+# The last of those is inherited rather than introduced. 0019 re-issues
+# CREATE OR REPLACE FUNCTION ops.assert_risk_increase_permitted in order to add its
+# own step 4, which makes 0019's copy of that function -- including the reconciliation
+# gate call carried forward from 0018 -- the definition that is actually live. A
+# mutation of that gate must therefore be applied to THIS file; see mutation I.
 #
 # The market schema had ZERO triggers before this migration. A green test suite
 # proved nothing about a control that did not exist, which is the whole reason
@@ -73,8 +79,11 @@ function Invoke-Mutation {
         }
 
         $out = (& go test ./dbtest/... -count=1 2>&1) -join "`n"
-        $failed = @(Select-String -InputObject $out -Pattern '^\s*--- FAIL: (\w+)' -AllMatches |
-            ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        # (?m) is load-bearing. Without it ^ anchors to the start of the whole joined
+        # string, so this reported only the FIRST failing test and the MustFailPattern
+        # check below was made against one test out of all of them.
+        $failed = @([regex]::Matches($out, '(?m)^\s*--- FAIL: (\w+)') |
+            ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
 
         if ($failed.Count -eq 0) {
             Write-Host "    RESULT: no test failed -- the removed behaviour was NOT load-bearing"
@@ -147,7 +156,7 @@ $results['E'] = Invoke-Mutation -Name 'tradability no longer checked at risk app
 # an effective mapping repointed at another instrument.
 $results['F'] = Invoke-Mutation -Name 'effective venue symbol mapping can be repointed' `
     -Description 'An in-force mapping can be rewritten to a different instrument or symbol.' `
-    -MustFailPattern 'Repointed|Renamed' `
+    -MustFailPattern 'Repointed|Renamed|MoveItsEffectiveAt' `
     -Mutate {
         param($s)
         $s -replace '    IF OLD\.effective_at <= now\(\) THEN\r?\n        IF NEW\.instrument_id', '    IF false THEN
@@ -174,6 +183,23 @@ $results['H'] = Invoke-Mutation -Name 'sequence watermark may move backwards' `
     -Mutate {
         param($s)
         $s -replace '       AND NEW\.observed_sequence < OLD\.observed_sequence THEN', '       AND false THEN'
+    }
+
+# I: the reconciliation gate call removed from the risk-increase path. 0019 does not
+# introduce this control, it comes from 0018 -- but 0019 REPLACES the function that
+# contains it in order to add its own step 4, so 0019's copy is the definition that is
+# actually live. This mutation used to sit in mutate_0018.ps1, where it stripped the
+# identical call from 0018's copy and changed the live schema by zero bytes: 0019's
+# definition overwrote it at apply time, so nothing went red and the harness reported
+# the mutation as not load-bearing. Aiming it here is what makes it prove anything.
+$results['I'] = Invoke-Mutation -Name 'gate no longer called from the risk-increase path' `
+    -Description 'Unresolved material breaks are recorded and never acted on: the pre-0018 state.' `
+    -MustFailPattern 'Break|Uninterpretable' `
+    -Mutate {
+        param($s)
+        [regex]::Replace($s,
+            '(    -- 3\. An unresolved MATERIAL reconciliation break covering this scope \(0018\)\.[\s\S]*?    PERFORM reconciliation\.assert_break_permitted\(\s*p_environment, p_account_id, p_instrument_id, p_venue_id,\s*p_is_risk_increasing, p_context\);)',
+            '    -- MUTANT I: the reconciliation gate is not called', 1)
     }
 
 # Restored and the schema rebuilt outside the per-mutation try/finally above,

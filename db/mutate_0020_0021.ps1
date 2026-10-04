@@ -41,7 +41,13 @@ function Invoke-Mutation {
         [string]$Description,
         [string]$Target,          # '20' or '21'
         [scriptblock]$Mutate,
-        [string]$MustFailPattern
+        [string]$MustFailPattern,
+        # Tests that are expected to fail as a CONSEQUENCE of the mutation rather than
+        # as tests of the control it removed. They must be named explicitly: a
+        # collateral failure that nobody declared is indistinguishable from a control
+        # being caught by the wrong test, which is what the over-broad check exists
+        # to catch. Declaring one is a claim that has to be justified in a comment.
+        [string[]]$ExpectedCollateral = @()
     )
 
     Write-Host ""
@@ -73,8 +79,11 @@ function Invoke-Mutation {
         }
 
         $out = (& go test ./dbtest/... ./contracts/... -count=1 2>&1) -join "`n"
-        $failed = @(Select-String -InputObject $out -Pattern '^\s*--- FAIL: (\w+)' -AllMatches |
-            ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        # (?m) is load-bearing. Without it ^ anchors to the start of the whole joined
+        # string, so this reported only the FIRST failing test and the MustFailPattern
+        # check below was made against one test out of all of them.
+        $failed = @([regex]::Matches($out, '(?m)^\s*--- FAIL: (\w+)') |
+            ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
 
         if ($failed.Count -eq 0) {
             Write-Host "    RESULT: no test failed -- the removed behaviour was NOT load-bearing"
@@ -84,7 +93,16 @@ function Invoke-Mutation {
         Write-Host "    RESULT: caught. Failing tests:"
         foreach ($f in $failed) { Write-Host "      - $f" }
 
-        $unrelated = @($failed | Where-Object { $_ -notmatch $MustFailPattern })
+        $declaredPat = if ($ExpectedCollateral.Count -gt 0) { ($ExpectedCollateral -join '|') } else { '' }
+        $collateral = @()
+        $unrelated = @()
+        foreach ($f in $failed) {
+            if ($declaredPat -and $f -match $declaredPat) { $collateral += $f; continue }
+            if ($f -notmatch $MustFailPattern) { $unrelated += $f }
+        }
+        if ($collateral.Count -gt 0) {
+            Write-Host "    expected collateral, declared: $($collateral -join ', ')"
+        }
         if ($unrelated.Count -gt 0) {
             Write-Host "    !! over-broad: also failed tests outside '$MustFailPattern': $($unrelated -join ', ')"
             return $false
@@ -99,9 +117,15 @@ function Invoke-Mutation {
 # 0020 A: the SQL encoder stops taking five bits at a time and reverts to the
 # pre-0020 per-byte mapping. This is the exact divergence 0020 was written to
 # remove, so it is the mutation that matters most for this file.
+# Reverting the encoder changes every identifier the database mints, so the audit chain
+# and the halt table stop finding their own rows. Those tests do not test the encoder;
+# they fail because the ids they look up no longer exist in the form they were minted
+# under. That is understood collateral, and it is named rather than absorbed into the
+# MustFailPattern, which would hide it rather than record it.
 $results['A'] = Invoke-Mutation -Name 'SQL reverts to the per-byte encoding' `
     -Description 'The SQL encoder takes the top five bits of each byte instead of a continuous bit stream.' `
-    -Target '20' -MustFailPattern 'EncodersAgree' `
+    -Target '20' -MustFailPattern 'EncodersAgree|ValidAndUnique|WellFormed|SQLEncoder' `
+    -ExpectedCollateral @('AuditChain', 'ClearingTheHalt', 'MarkChainBroken') `
     -Mutate {
         param($s)
         # Reverts the SQL encoder to the pre-0020 per-byte mapping, ignoring
