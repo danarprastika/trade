@@ -1348,9 +1348,12 @@ and a lone low bit catch opposite failure modes, which is why both are present.
 
 ### Mutation testing
 
-`db/mutate_0020_0021.ps1`, `db/mutate_domain.ps1` mutation A reverts the SQL encoder to the pre-0020
+`db/mutate_0020_0021.ps1` mutation A reverts the SQL encoder to the pre-0020
 per-byte mapping; mutation B reverses the bit order within each character group.
-Both are caught. The test fails on the real defect it was written for.
+Both are caught, by tests that are about the encoder rather than by an unrelated
+test happening to break. Mutation A also fails the audit-chain and halt tests as
+collateral, which it now declares explicitly instead of absorbing into its pattern.
+See "Mutation testing" in the 0021 section below for the full attribution.
 
 ### The control that was never called
 
